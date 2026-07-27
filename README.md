@@ -101,6 +101,14 @@ is `GPUView::backingScale()`. The atlas is rasterized at that density, so a 15pt
 font is 15pt on a Retina panel and on a conventional one. Only the scissor rect
 is in pixels, because that is what both backends' scissor state means.
 
+**Fonts.** `ViewOptions::fontPath` defaults to the platform's UI font — SF Pro
+on macOS, Segoe UI on Windows — and falls back to ImGui's built-in font if the
+file cannot be read. This is deliberate rather than incidental: ImGui's default
+is ProggyClean, a bitmap-style font drawn for exactly 13px with no
+antialiasing. It is crisp at that one size and blocky and soft at every other,
+which reads as a low-resolution app on a Retina panel no matter how correct the
+DPI pipeline is. Point `fontPath` at your own TTF to override.
+
 **The ImTextureID contract.** It is a `GPU::Texture*`. To draw your own texture,
 pass `Gui::DrawRenderer::toTextureID(myTexture)` to `ImGui::Image` and keep the
 texture alive for the frame that draws it.

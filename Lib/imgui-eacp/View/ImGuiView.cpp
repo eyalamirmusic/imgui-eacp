@@ -66,6 +66,20 @@ bool isPrintable(char character)
     const auto value = static_cast<unsigned char>(character);
     return value >= 0x20 && value != 0x7f;
 }
+
+// The system UI font, as a path rather than through the platform's font APIs:
+// ImGui rasterizes with stb_truetype and wants a file, and every desktop this
+// runs on ships one at a fixed location.
+std::string platformFontPath()
+{
+#if defined(__APPLE__)
+    return "/System/Library/Fonts/SFNS.ttf";
+#elif defined(_WIN32)
+    return "C:\\Windows\\Fonts\\segoeui.ttf";
+#else
+    return {};
+#endif
+}
 } // namespace
 
 ImGuiView::ImGuiView(const ViewOptions& optionsToUse)
@@ -130,10 +144,31 @@ void ImGuiView::configureContext()
         ImGui::StyleColorsLight();
 
     ImGui::GetStyle().FontSizeBase = options.fontSize;
+    loadFont();
 
     auto& platformIo = ImGui::GetPlatformIO();
     platformIo.Platform_GetClipboardTextFn = readClipboard;
     platformIo.Platform_SetClipboardTextFn = writeClipboard;
+}
+
+void ImGuiView::loadFont() const
+{
+    const auto path =
+        options.fontPath.empty() ? platformFontPath() : options.fontPath;
+
+    if (path.empty())
+        return;
+
+    auto config = ImFontConfig {};
+
+    // A missing system font is not a programming error — the path is an
+    // assumption about the OS install — so ask for a null return rather than
+    // the assert, and let the built-in font stand in.
+    config.Flags |= ImFontFlags_NoLoadError;
+
+    // Size 0 leaves the font dynamically sized, so it follows FontSizeBase and
+    // whatever PushFont asks for rather than being baked to one size here.
+    ImGui::GetIO().Fonts->AddFontFromFileTTF(path.c_str(), 0.0f, &config);
 }
 
 const char* ImGuiView::pasteFromClipboard()

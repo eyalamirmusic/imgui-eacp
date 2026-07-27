@@ -98,6 +98,12 @@ global `ImGui` namespace for every call inside it.
   if it doesn't.
 - **`ContextScope` on every entry point.** Each view owns a context; a public
   method that does not make its own current will read or write another view's.
+- **A system font is loaded by default.** ImGui's built-in ProggyClean is a
+  bitmap-style font baked for exactly 13px with no antialiasing, so at any other
+  size — and on a Retina panel especially — the whole UI reads as low
+  resolution. `ViewOptions::fontPath` defaults to SF Pro / Segoe UI, with
+  `ImFontFlags_NoLoadError` so a machine missing the file falls back rather than
+  asserting. Don't "simplify" this back to the default font.
 
 ## Code Style
 

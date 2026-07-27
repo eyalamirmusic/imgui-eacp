@@ -20,6 +20,18 @@ struct ViewOptions
     // apparent size on a Retina panel and a conventional one.
     float fontSize = 15.0f;
 
+    // A TrueType/OpenType file loaded at `fontSize`. Empty means the platform's
+    // own UI font — SF Pro on macOS, Segoe UI on Windows — and a path that
+    // cannot be read falls back to ImGui's built-in font.
+    //
+    // Worth saying why this is not simply left alone. ImGui's built-in default
+    // is ProggyClean, a bitmap-style font drawn for exactly 13px with no
+    // antialiasing: crisp at that one size, blocky and soft at every other. At
+    // any other size, and on a Retina panel especially, it reads as a
+    // low-resolution app however right the rest of the pipeline is — so the
+    // default here is a real vector font instead.
+    std::string fontPath;
+
     // Redraw every display refresh rather than only when something asked for
     // it. On by default because an immediate-mode UI animates constantly —
     // caret blink, hover fades, anything driven by ImGui::GetTime() — and none
@@ -94,6 +106,7 @@ protected:
 
 private:
     void configureContext();
+    void loadFont() const;
     void beginFrame();
     void updateCursor();
     void updateFocus();
