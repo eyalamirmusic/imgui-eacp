@@ -26,13 +26,13 @@ so a branch created in either tree is immediately visible in the other, and
 there is no second fetch of the repository:
 
 ```bash
-git -C $HOME/Code/eacp worktree add $HOME/Code/eacp-for-imgui -b gpu/base-vertex main
+git -C $HOME/Code/eacp worktree add $HOME/Code/eacp-for-imgui -b gpu-base-vertex main
 ```
 
 Each phase gets its own branch on that same worktree:
 
 ```bash
-git -C $HOME/Code/eacp-for-imgui switch -c gpu/streaming-buffer
+git -C $HOME/Code/eacp-for-imgui switch -c gpu-streaming-buffer
 ```
 
 To remove it when the work has landed:
@@ -539,7 +539,7 @@ parameter. Any friction in §0 surfaces here, where nothing else is in flight.
 Done when: `BaseVertexTests` passes on at least one backend, `DrawRenderer` no
 longer rebases indices, and its index buffer is `ImDrawIdx`-width.
 
-**Status: done on `gpu/base-vertex` (both repos), Metal verified.** The eacp
+**Status: done on `gpu-base-vertex` (both repos), Metal verified.** The eacp
 side is the two signatures plus four call sites; `ShaderProgram.h` needed no
 change after all, because the `draw(Program&)` templates live in `RenderPass.h`
 and the defaulted parameter covers them. `BaseVertexTests.cpp` has four cases
@@ -556,7 +556,7 @@ demonstrated.
 Done when: `StreamingBufferTests` and the `Sprites` allocation assertion pass,
 `DrawRenderer` has deleted its rotation, and `Bench` shows a flat buffer count.
 
-**Status: done on `gpu/streaming-buffer` (both repos), Metal verified.** Suite
+**Status: done on `gpu-streaming-buffer` (both repos), Metal verified.** Suite
 is 147 passed, 0 failed. Every recycling test was confirmed to fail with
 `write()` reverted to allocating per call, including the `Sprites` gate, so they
 catch the regression they exist for.
