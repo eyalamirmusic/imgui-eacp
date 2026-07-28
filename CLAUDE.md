@@ -30,11 +30,17 @@ cmake --build build
 # Build one app
 cmake --build build --target Demo
 cmake --build build --target MixedViews
+cmake --build build --target Bench
 ```
 
 Output:
 - `build/Apps/Demo/Demo.app` (macOS bundle)
 - `build/Apps/MixedViews/MixedViews.app`
+- `build/Apps/Bench/Bench.app`
+
+`Bench` reports what a frame costs. Build it `RelWithDebInfo` or the numbers are
+meaningless: `prepare()` is a per-vertex loop and reads 13× slower in a Debug
+build, while `encode()` is API calls and reads the same in both.
 
 ### Local eacp checkout
 
@@ -103,6 +109,11 @@ global `ImGui` namespace for every call inside it.
   `drawSampling` is one constant used both by `DrawShader`'s constructor and by
   every `setFragmentTexture` call. Changing one without the other makes the two
   backends draw differently.
+- **The renderer times itself.** `getPrepareTime()` / `getEncodeTime()` are two
+  clock reads a frame, below the noise of everything they bracket, and they are
+  what `Apps/Bench` reports percentiles of. They are not behind a build switch
+  on purpose: a measurement that has to be turned on is one nobody has running
+  when the regression lands.
 - **The destructor clears `io.Backend*`.** `ImGui::Shutdown` asserts that a
   backend unregistered itself, and the assert fires on every debug-build exit
   if it doesn't.

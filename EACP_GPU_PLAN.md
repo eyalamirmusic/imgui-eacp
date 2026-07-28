@@ -22,7 +22,8 @@ each one actually cost and what the plan got wrong about it.
 | 1 — base vertex (§1.1) | `gpu-base-vertex` | Done, Metal verified |
 | 2 — streaming buffers (§1.2) | `gpu-streaming-buffer` | Done, Metal verified |
 | 3 — packed vertex formats (§1.3) | `gpu-packed-formats` | Done, Metal verified |
-| 4 — `Bench` and timestamps (§2.2) | — | Not started |
+| 4a — `Bench`, CPU side (§2.2) | `gpu-packed-formats` | Done, this repo only |
+| 4b — timestamp queries (§2.2) | — | Not started |
 
 eacp's `GPUTests` is **153 passed, 0 failed**, up from 141 before any of this.
 Every new assertion was checked against the failure it exists for by breaking
@@ -649,13 +650,60 @@ not happen: the `Demo` panel's `Device::buffersCreated()` readout answered the
 one question Phase 2 had to answer, and building a whole app to ask it again
 would have held the phase up for nothing.
 
-So Layer 1 is still owed, and its remaining value is the part the Demo panel
+So Layer 1 was still owed, and its remaining value was the part the Demo panel
 does not cover — a *controlled* workload rather than whatever the demo window
 happens to contain, and `prepare()`/`encode()` timings as percentiles rather
-than a frame rate. No baseline against eacp `main` was ever recorded, and now
-cannot be without checking the old code back out; the numbers to compare
-against are the ones in §1.1 and §1.3 (index bytes halved, vertex 32 → 20),
-which are arithmetic rather than measurements. Layer 2 is unblocked.
+than a frame rate.
+
+**Status: Layer 1 done on `gpu-packed-formats`, Metal verified. This repo only —
+`Apps/Bench` needs nothing from eacp that Phases 1 to 3 did not already land.
+Layer 2 not started, and unblocked.**
+
+`Apps/Bench` drives `ImGuiView` against a load set by three sliders: draw lists,
+commands per list, rects per command. A command is a clip rect, because a clip
+rect change is what makes ImGui start a new `ImDrawCmd` — bands rather than
+whatever a widget happens to emit is what makes the count exact. Every rect is 4
+vertices and 6 indices whether or not it lands on screen, so the load is the
+number the sliders say.
+
+The one library change it needed is `DrawRenderer::getPrepareTime()` and
+`getEncodeTime()`. The plan said the app would wrap the two calls itself, which
+it cannot: `ImGuiView::render` is what calls them, and overriding `render` in the
+app to get a clock around them forks the library's frame logic into the tool
+measuring it. Two clock reads a frame, always on — see the header for why not
+behind a switch.
+
+Numbers, RelWithDebInfo, Apple silicon, 120Hz, at the default load of 8 lists ×
+8 commands × 64 rects (so 64 draws and 16384 rect vertices asked for):
+
+| | p50 | p95 | max |
+| --- | --- | --- | --- |
+| `prepare()` | 53.0µs | 95.8µs | 113.0µs |
+| `encode()` | 21.2µs | 36.6µs | 56.2µs |
+
+The frame that costs those is 21644 vertices, 32688 indices and 74 draws — the
+~5000 vertices and 10 draws over what the sliders ask for are the panel drawing
+itself, which is what "the tool is drawn by the thing it measures" costs. It
+moves 487 KB of geometry a frame, and the allocation line reads `6 buffers
+created (+0 this frame), worst frame in the last 512: +0`: three vertex pools,
+three index pools, and nothing after that.
+
+Three things worth carrying forward:
+
+- **A Debug build measures something else, by 13×.** The same load reads
+  `prepare` p50 716µs there against Release's 53µs, while `encode` reads 22µs
+  against 21.2µs. Encode is API calls, which the optimiser cannot do anything
+  about; prepare is the per-vertex copy, which it can. A Debug number says
+  nothing at all about §1.3.
+- **The missing baseline is arithmetic rather than a measurement.** No run
+  against pre-Phase-1 eacp was ever recorded and checking it back out for one is
+  not worth the afternoon. The same frame at the 32-byte vertex and 32-bit
+  indices this started from is 21644 × 32 + 32688 × 4 = 804 KB, against the
+  487 KB it moves now — 1.65×, which is what §1.1 and §1.3 said it would be.
+- **The allocation counter needed a window, not a readout.** An allocation is a
+  single-frame event, so a live "+N this frame" shows it for one 120th of a
+  second and then forgets. The ring keeps the worst frame in the last 512, which
+  is the form the number is actually usable in.
 
 **Then** the glTF corpus, `cgltf`, and the Tier 1 renderer gaps — mips, face
 culling, depth compare/write control, viewport — with this backend's ImGui

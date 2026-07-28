@@ -39,6 +39,28 @@ std::uint8_t channel(ImU32 color, int shift)
 // there is nothing to widen them for — 16 bits by default.
 constexpr auto drawIndexFormat =
     sizeof(ImDrawIdx) == 2 ? GPU::IndexFormat::UInt16 : GPU::IndexFormat::UInt32;
+
+// Writes how long a scope took where the renderer reports it. A destructor
+// rather than a pair of calls because encode() returns early on an empty frame,
+// and a frame that costs nothing still has to be recorded as costing nothing —
+// a stale reading is worse than no reading.
+class ScopedTimer
+{
+public:
+    explicit ScopedTimer(std::chrono::nanoseconds& targetToUse)
+        : target(targetToUse)
+    {
+    }
+
+    ~ScopedTimer() { target = std::chrono::steady_clock::now() - start; }
+
+    ScopedTimer(const ScopedTimer&) = delete;
+    ScopedTimer& operator=(const ScopedTimer&) = delete;
+
+private:
+    std::chrono::nanoseconds& target;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+};
 } // namespace
 
 DrawRenderer::DrawRenderer(int sampleCount)
@@ -231,6 +253,8 @@ void DrawRenderer::uploadGeometry()
 
 void DrawRenderer::prepare(ImDrawData& drawData)
 {
+    auto timer = ScopedTimer {prepareTime};
+
     commands.clear();
     vertices.clear();
     indices.clear();
@@ -261,6 +285,8 @@ void DrawRenderer::bindState(GPU::RenderPass& pass)
 
 void DrawRenderer::encode(GPU::RenderPass& pass)
 {
+    auto timer = ScopedTimer {encodeTime};
+
     if (commands.empty() || vertexBuffer == nullptr || indexBuffer == nullptr)
         return;
 

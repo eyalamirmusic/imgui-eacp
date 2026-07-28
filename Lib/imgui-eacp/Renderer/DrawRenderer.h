@@ -5,6 +5,7 @@
 
 #include <imgui.h>
 
+#include <chrono>
 #include <cstdint>
 
 namespace eacp::Gui
@@ -88,6 +89,17 @@ public:
     int getIndexCount() const { return indices.size(); }
     int getDrawCount() const { return commands.size(); }
 
+    // What the last prepare() and encode() cost on the CPU, measured around the
+    // whole call. encode() records draws rather than running them, so its
+    // number is the cost of encoding commands and says nothing about how long
+    // the GPU then took over them.
+    //
+    // Always on rather than behind a build switch: two clock reads a frame is
+    // below the noise of everything they bracket, and a measurement that has to
+    // be enabled is one nobody has running when the regression lands.
+    std::chrono::nanoseconds getPrepareTime() const { return prepareTime; }
+    std::chrono::nanoseconds getEncodeTime() const { return encodeTime; }
+
 private:
     struct DrawCommand
     {
@@ -144,5 +156,8 @@ private:
     // a frame with no geometry and the next upload.
     const GPU::Buffer* vertexBuffer = nullptr;
     const GPU::Buffer* indexBuffer = nullptr;
+
+    std::chrono::nanoseconds prepareTime {};
+    std::chrono::nanoseconds encodeTime {};
 };
 } // namespace eacp::Gui
