@@ -6,7 +6,6 @@
 #include <imgui.h>
 
 #include <cstdint>
-#include <optional>
 
 namespace eacp::Gui
 {
@@ -88,16 +87,6 @@ public:
     int getDrawCount() const { return commands.size(); }
 
 private:
-    // One set of buffers per frame that may be in flight. The geometry is
-    // rewritten from scratch every tick, and writing into the buffer a frame
-    // still on the GPU is reading tears the picture — so the sets rotate
-    // instead of being synchronised against.
-    struct FrameBuffers
-    {
-        std::optional<GPU::Buffer> vertices;
-        std::optional<GPU::Buffer> indices;
-    };
-
     struct DrawCommand
     {
         Graphics::Rect scissor;
@@ -119,10 +108,6 @@ private:
         int baseVertex = 0;
     };
 
-    // Matches the deepest pipeline either backend runs (Metal's default
-    // drawable pool is three; DXGI's present queue is two).
-    static constexpr int framesInFlight = 3;
-
     void updateTexture(ImTextureData& texture);
     void createTexture(ImTextureData& texture);
     void uploadRegions(ImTextureData& texture);
@@ -133,11 +118,8 @@ private:
     void appendIndices(const ImDrawList& list, const ImDrawCmd& command);
 
     void uploadGeometry();
-    void ensureCapacity(std::optional<GPU::Buffer>& buffer,
-                        std::size_t bytes,
-                        GPU::BufferUsage usage);
 
-    void bindState(GPU::RenderPass& pass, FrameBuffers& buffers);
+    void bindState(GPU::RenderPass& pass);
 
     DrawShader shader;
 
@@ -149,7 +131,16 @@ private:
     // these, so the addresses have to survive the container growing.
     OwnedVector<GPU::Texture> textures;
 
-    FrameBuffers frames[framesInFlight];
-    int frameIndex = 0;
+    // The geometry is rewritten from scratch every tick, and writing into a
+    // buffer a frame still on the GPU is reading tears the picture. The streams
+    // hand back one no in-flight frame is reading, and recycle it once that
+    // frame cannot be.
+    GPU::StreamingBuffers vertexStream {GPU::BufferUsage::Vertex};
+    GPU::StreamingBuffers indexStream {GPU::BufferUsage::Index};
+
+    // What this frame's prepare() wrote, for its encode() to bind. Null between
+    // a frame with no geometry and the next upload.
+    const GPU::Buffer* vertexBuffer = nullptr;
+    const GPU::Buffer* indexBuffer = nullptr;
 };
 } // namespace eacp::Gui

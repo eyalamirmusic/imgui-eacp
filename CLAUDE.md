@@ -81,9 +81,12 @@ global `ImGui` namespace for every call inside it.
   texture uploads and buffer rewrites to happen with no encoder open, and a
   `RenderPass` is an open encoder for its whole lifetime. `prepare()` runs
   before `Frame::beginPass`; `encode()` runs inside the pass.
-- **Three rotating buffer sets.** The geometry is rewritten every frame, and
-  writing into a buffer a frame still on the GPU is reading tears the picture.
-  `Buffer::update` does not synchronise against frames in flight.
+- **Geometry goes through `GPU::StreamingBuffers`.** It is rewritten every frame,
+  and writing into a buffer a frame still on the GPU is reading tears the
+  picture — `Buffer::update` does not synchronise against frames in flight. The
+  stream hands back a buffer no in-flight frame is reading and recycles it once
+  that frame cannot be, so steady state allocates nothing. `DrawRenderer` used
+  to roll its own rotation; don't bring it back.
 - **`ImDrawIdx`-width indices, copied verbatim.** One vertex buffer serves every
   draw list, and `RenderPass::drawIndexed`'s `baseVertex` says where each list
   starts in it — so nothing is added into the index values and they stay 16-bit.

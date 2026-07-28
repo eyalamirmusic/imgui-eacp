@@ -1,6 +1,5 @@
 #include "DrawRenderer.h"
 
-#include <algorithm>
 #include <cstring>
 
 namespace eacp::Gui
@@ -27,21 +26,6 @@ void DrawShader::define()
 
 namespace
 {
-constexpr auto minimumBufferBytes = std::size_t {64 * 1024};
-
-// Doubling from a floor rather than fitting exactly: the geometry of a UI
-// swings by a lot between frames (a menu opening, a table scrolling), and
-// resizing to each new high-water mark would reallocate on most of them.
-std::size_t grownCapacity(std::size_t needed, std::size_t current)
-{
-    auto capacity = std::max(current, minimumBufferBytes);
-
-    while (capacity < needed)
-        capacity *= 2;
-
-    return capacity;
-}
-
 float channel(ImU32 color, int shift)
 {
     return (float) ((color >> shift) & 0xFF) / 255.0f;
@@ -226,36 +210,19 @@ void DrawRenderer::appendList(const ImDrawList& list, ImVec2 origin, ImVec2 scal
     }
 }
 
-void DrawRenderer::ensureCapacity(std::optional<GPU::Buffer>& buffer,
-                                  std::size_t bytes,
-                                  GPU::BufferUsage usage)
-{
-    if (buffer.has_value() && buffer->size() >= bytes)
-        return;
-
-    const auto current = buffer.has_value() ? buffer->size() : std::size_t {0};
-
-    // Allocated empty and filled by update() below, because the grown size is
-    // larger than the data on hand and the constructor would read past it.
-    buffer.emplace(
-        GPU::Device::shared(), nullptr, grownCapacity(bytes, current), usage);
-}
-
 void DrawRenderer::uploadGeometry()
 {
+    vertexBuffer = nullptr;
+    indexBuffer = nullptr;
+
     if (vertices.empty() || indices.empty())
         return;
 
-    auto& buffers = frames[frameIndex];
+    vertexBuffer = &vertexStream.write(
+        vertices.data(), sizeof(DrawVertex) * (std::size_t) vertices.size());
 
-    const auto vertexBytes = sizeof(DrawVertex) * (std::size_t) vertices.size();
-    const auto indexBytes = sizeof(ImDrawIdx) * (std::size_t) indices.size();
-
-    ensureCapacity(buffers.vertices, vertexBytes, GPU::BufferUsage::Vertex);
-    ensureCapacity(buffers.indices, indexBytes, GPU::BufferUsage::Index);
-
-    buffers.vertices->update(vertices.data(), vertexBytes);
-    buffers.indices->update(indices.data(), indexBytes);
+    indexBuffer = &indexStream.write(
+        indices.data(), sizeof(ImDrawIdx) * (std::size_t) indices.size());
 }
 
 void DrawRenderer::prepare(ImDrawData& drawData)
@@ -277,27 +244,23 @@ void DrawRenderer::prepare(ImDrawData& drawData)
     for (const auto* list: drawData.CmdLists)
         appendList(*list, drawData.DisplayPos, drawData.FramebufferScale);
 
-    frameIndex = (frameIndex + 1) % framesInFlight;
     uploadGeometry();
 }
 
-void DrawRenderer::bindState(GPU::RenderPass& pass, FrameBuffers& buffers)
+void DrawRenderer::bindState(GPU::RenderPass& pass)
 {
     pass.setPipeline(shader.pipeline());
-    pass.setVertexBuffer(*buffers.vertices);
+    pass.setVertexBuffer(*vertexBuffer);
     pass.setVertexUniforms(shader);
     pass.setFragmentUniforms(shader);
 }
 
 void DrawRenderer::encode(GPU::RenderPass& pass)
 {
-    auto& buffers = frames[frameIndex];
-
-    if (commands.empty() || !buffers.vertices.has_value()
-        || !buffers.indices.has_value())
+    if (commands.empty() || vertexBuffer == nullptr || indexBuffer == nullptr)
         return;
 
-    bindState(pass, buffers);
+    bindState(pass);
 
     for (const auto& command: commands)
     {
@@ -305,7 +268,7 @@ void DrawRenderer::encode(GPU::RenderPass& pass)
         {
             command.callbackCommand->UserCallback(command.callbackList,
                                                   command.callbackCommand);
-            bindState(pass, buffers);
+            bindState(pass);
             continue;
         }
 
@@ -314,7 +277,7 @@ void DrawRenderer::encode(GPU::RenderPass& pass)
 
         pass.setScissorRect(command.scissor);
         pass.setFragmentTexture(*command.texture, 0, drawSampling);
-        pass.drawIndexed(*buffers.indices,
+        pass.drawIndexed(*indexBuffer,
                          command.indexCount,
                          drawIndexFormat,
                          command.firstIndex,

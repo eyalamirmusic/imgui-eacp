@@ -54,6 +54,15 @@ struct DemoView final : Gui::ImGuiView
                     drawn.getIndexCount(),
                     drawn.getDrawCount());
 
+        // Per-frame geometry goes through GPU::StreamingBuffers, which recycles,
+        // so this stops moving once the pools are warm however busy the UI gets.
+        // A frame count above zero here is a GPU allocation in the frame loop.
+        const auto created = GPU::Device::shared().buffersCreated();
+        ImGui::Text("%d GPU buffers created (%+d this frame)",
+                    created,
+                    created - lastBufferCount);
+        lastBufferCount = created;
+
         ImGui::SeparatorText("Clear colour");
 
         // The pass behind the UI is eacp's, not ImGui's, so this drives a
@@ -65,6 +74,7 @@ struct DemoView final : Gui::ImGuiView
     }
 
     float background[3] = {0.09f, 0.10f, 0.13f};
+    int lastBufferCount = 0;
 };
 
 Graphics::WindowOptions windowOptions()

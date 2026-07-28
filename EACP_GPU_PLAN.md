@@ -556,6 +556,27 @@ demonstrated.
 Done when: `StreamingBufferTests` and the `Sprites` allocation assertion pass,
 `DrawRenderer` has deleted its rotation, and `Bench` shows a flat buffer count.
 
+**Status: done on `gpu/streaming-buffer` (both repos), Metal verified.** Suite
+is 147 passed, 0 failed. Every recycling test was confirmed to fail with
+`write()` reverted to allocating per call, including the `Sprites` gate, so they
+catch the regression they exist for.
+
+Two things came out differently from the plan above:
+
+- **Off-screen frames bump the counter too**, which §4 guessed they should not.
+  The reasoning there was right — `OffscreenTarget` blocks, so nothing is in
+  flight — but it misses that *not* advancing makes a loop of off-screen renders
+  one endless frame, on which the pool takes a fresh buffer every pass and never
+  reclaims one. `renderToImage` in a test loop is exactly that shape.
+- **`write()` copies the byte count it is given**, like `Buffer::update`, so a
+  short source with a long count reads off the end. Cost an hour to a SIGBUS in
+  a test that passed a 256-byte payload and claimed 4 MB.
+
+`Bench` does not exist yet (Phase 4), so the flat-count evidence is the `Demo`
+panel, which now reports `Device::buffersCreated()` and its per-frame delta: it
+reads `6 GPU buffers created (+0 this frame)` — three vertex pools, three index
+pools — and stays there.
+
 **Phase 3 — packed vertex formats (§1.3).** Riskiest, and best done once the
 conformance harness from Phase 1 exists to copy.
 
@@ -578,10 +599,12 @@ overlay as the inspector, which by then is free.
   But `GPUView::setFramesInFlight` is per-view and can be 2 on Windows, so a
   device-wide constant is an over-estimate rather than a bug — it costs one
   extra pool. Revisit only if the memory shows up.
-- **Does `Device` already have somewhere sensible for a frame counter?** It is
-  described as the process-wide device and queue, so yes, but check whether
-  off-screen `CommandBuffer` submissions should bump it too. They should not:
-  `OffscreenTarget` blocks until the GPU is done, so nothing is in flight.
+- ~~**Does `Device` already have somewhere sensible for a frame counter?**~~
+  Answered in Phase 2: yes, and *both* `Frame` constructors bump it, including
+  the off-screen one — not for correctness but because a loop of off-screen
+  renders would otherwise be a single endless frame to `StreamingBuffers`. A
+  `CommandBuffer` submitted outside a `Frame` still does not bump, and streaming
+  is not the right type for data written on that path.
 - **`setInstances` currently has an implicit contract** that each call gets
   independent storage. Writing that down in the header is part of Phase 2, since
   after the change it becomes a property of `StreamingBuffers` rather than an

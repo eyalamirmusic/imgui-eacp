@@ -81,9 +81,12 @@ one: `prepare()` creates and uploads textures and rewrites the geometry, then
 their uploads outside an open encoder, and a `RenderPass` is an open encoder
 for the whole of its lifetime.
 
-Geometry lives in three rotating buffer sets, one per frame that may be in
-flight. The UI is rebuilt from scratch every tick, and writing into a buffer a
-frame still on the GPU is reading tears the picture.
+Geometry goes through `GPU::StreamingBuffers`. The UI is rebuilt from scratch
+every tick, and writing into a buffer a frame still on the GPU is reading tears
+the picture, so each frame is handed a buffer no in-flight frame is reading —
+recycled once that frame can no longer be on the GPU, which means a steady UI
+allocates nothing. The demo panel's "GPU buffers created" is that claim,
+reported live.
 
 Every draw list shares one vertex stream, and each draw carries its own base
 vertex to say where its list starts in it — so the indices are copied through
