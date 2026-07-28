@@ -13,8 +13,9 @@ wiring for that is the first thing to get right.
 
 ## Where this stands
 
-Phases 1–4 are on `main` in both repositories. §3 carries what each one actually
-cost and what the plan got wrong about it.
+Everything in this plan except the glTF corpus is on `main` in both
+repositories. §3 carries what each phase actually cost and what the plan got
+wrong about it.
 
 | Phase | Branch | State |
 | --- | --- | --- |
@@ -23,7 +24,13 @@ cost and what the plan got wrong about it.
 | 3 — packed vertex formats (§1.3) | `gpu-packed-formats` | Done, both backends, merged |
 | 4a — `Bench`, CPU side (§2.2) | `gpu-packed-formats` | Done, this repo only, merged |
 | 4b — timestamp queries (§2.2) | `gpu-timestamps` | Done, both backends, merged |
-| 5 — pipeline state (§3) | `gpu-pipeline-state` | Done, both backends, unmerged |
+| 5 — culling + depth state (§3) | `gpu-pipeline-state` | Done, both backends, merged |
+| 6 — viewport (§3) | `gpu-viewport` | Done, both backends, merged |
+| 7 — mipmaps (§3) | `gpu-mipmaps` | Done, both backends, merged |
+
+The branches were stacked, each cut from the one before, so the tip contained
+all of them and landing the lot was one fast-forward per repository. Every name
+above is now strictly inside `main` and can be deleted.
 
 The merge order is eacp first, always. `CMake/FindEACP.cmake` fetches
 `GIT_TAG main`, so between Phase 3 landing here and eacp's side reaching eacp
@@ -36,7 +43,8 @@ DrawRenderer.h(21): error C2039: 'UNorm8x4': is not a member of 'eacp::GPU'
 Worth remembering rather than rediscovering — while a phase is in flight here,
 this repository's CI says nothing at all.
 
-eacp's `GPUTests` is **168 passed, 0 failed**, up from 141 before any of this.
+eacp's `GPUTests` is **191 passed, 0 failed**, up from 141 before any of this,
+and the whole suite is **834 tests** in CI where it was 794.
 Every new assertion was checked against the failure it exists for by breaking
 the thing deliberately and watching it fail — the base vertex pinned back to
 zero, `StreamingBuffers::write` reverted to allocating per call, Metal's
@@ -865,9 +873,121 @@ Four things worth carrying forward:
 Also worth noting: this was the first test to exercise D3D12's off-screen depth
 attachment at all. It was written and correct — but nothing had ever run it.
 
-**Then** the rest of the Tier 1 gaps — mips and viewport — and the glTF corpus
-with `cgltf`, using this backend's ImGui overlay as the inspector, which by then
-is free.
+**And then it collided.** While this branch was in flight, face culling was
+implemented independently on eacp `main` — `CullMode`, a `cullMode()` accessor,
+`CullModeTests.cpp`, the lot. Two implementations of one feature, arrived at
+separately, touching all ten of the same files. That is recorded here because
+the resolution is the interesting part and because nothing in §0 anticipated it:
+the plan assumed this branch series was the only thing moving in eacp, and it
+was not.
+
+It was merged rather than rebased, `main`'s behaviour kept as the default
+wherever the two disagreed:
+
+- **`CullMode` is `main`'s** — enum order, comments, tests. `Winding` survived
+  from this branch as a *field* rather than a fixed rule, defaulting to
+  `CounterClockwise` so a pipeline that says nothing gets exactly what `main`
+  did. It earns its place on the geometry that does not arrive in glTF's
+  winding: a mesh wound the other way, an instance mirrored by a negative scale,
+  an inside-out skybox — none of which should need its indices rewritten.
+- **`main`'s backend comments replaced this branch's, and that is a correction.**
+  This branch reasoned that both APIs decide facing after the viewport transform
+  and wrote that down. `main` *measured* it — found `FrontCounterClockwise =
+  FALSE` culled the opposite face on D3D12 — and recorded that the two APIs
+  spell one convention identically because clip-space y is up and the
+  framebuffer origin is top left on each. Same conclusion, arrived at the better
+  way, and its comment explicitly warns off the reasoning used here.
+- **`prepare` is `main`'s.** Both sides added the same descriptor overload;
+  `main`'s positional form already builds a descriptor and delegates, which is
+  what this branch was reaching for, so the duplicate went.
+
+The two test files now overlap deliberately: `PipelineStateTests` sets
+`frontFace` explicitly on every step and so tests the *field*, while
+`CullModeTests` owns the *default convention*. Neither needed changing to
+coexist.
+
+**Phase 6 — viewport.** `RenderPass::setViewport` / `clearViewport`, alongside
+the scissor calls and in the same units.
+
+Done when: clip space can be mapped onto part of the target rather than all of
+it, and the two backends agree about where.
+
+**Status: done on `gpu-viewport`, verified on both backends.** 175 passed, 0
+failed locally; **810/810 on all four Windows toolchains**.
+
+Three things worth carrying forward:
+
+- **A viewport is not a scissor, and a careless test cannot tell.** A
+  full-screen quad drawn through a half-target viewport and the same quad
+  through a half-target scissor produce the *same picture*. So the geometry in
+  `ViewportTests` covers half of clip space rather than filling it: a viewport
+  moves it into the target's third quarter and a scissor would have deleted it.
+  Any case built on full-screen geometry proves nothing about which one was
+  implemented.
+- **An out-of-target rect is refused, not clamped**, and the codebase had
+  already answered this once: `Texture::update(region, ...)` refuses a region
+  that is not wholly inside the texture, explicitly *not* clamping, because a
+  clamped region uploads skewed pixels that are harder to spot than nothing
+  appearing. Same logic — a clamped scissor still shows what the caller asked
+  for, but a clamped viewport keeps drawing and squashes the picture into a
+  rectangle nobody chose.
+- **Neither backend forces that refusal.** With the bounds check removed, Metal
+  took the out-of-target viewport without complaint and drew through it. It is
+  eacp's policy, and `ViewportTests` is the only thing holding the two backends
+  to it.
+
+**Phase 7 — mipmaps.** `TextureDescriptor::mipmapped`, the chain, and the
+sampler that reads it.
+
+Done when: a minified texture stops aliasing, and both backends produce the same
+pixels doing it.
+
+**Status: done on `gpu-mipmaps`, verified on both backends.** 191 passed, 0
+failed locally; **834/834 across the Windows toolchains**, the per-subresource
+upload and the re-upload path among them.
+
+Four things worth carrying forward:
+
+- **The chain is built on the CPU, for both backends, deliberately.** Metal has
+  `generateMipmapsForTexture`; D3D12 has no equivalent — a chain there is a
+  compute shader, a UAV per level and a root signature to bind them. So the
+  choice was a GPU chain on one backend against a hand-written one on the other,
+  which is two filters producing two pictures for the same texture and the one
+  thing no conformance test could check, or one filter producing the same bytes
+  for both. It costs 4/3 of the pixels moved, once, at creation.
+- **It found a divergence that predated all of this.** D3D12's static samplers
+  had declared `MIN_MAG_MIP_LINEAR` since they were written; Metal's left
+  `mipFilter` at its default of `NotMipmapped` — "sample level 0, whatever
+  levels exist". The backends had disagreed from the start and nothing could
+  see it, because no texture had a second level. The first mipmapped one would
+  have been filtered on Windows and read at full size on Apple, from the same
+  `TextureSampling`, with no symptom but the picture.
+- **The scope estimate was wrong, and in the useful direction.** This was
+  expected to double the sampling configurations from four to eight and touch
+  the D3D12 root signature. It does neither: mip filtering on a single-level
+  texture is what both APIs do anyway, so it is invisible to every texture
+  without a chain.
+- **A red/green checkerboard sampled `Nearest` is what makes the drawing case
+  decisive.** `Linear` averages a 2×2 neighbourhood of level 0, and a 2×2
+  neighbourhood of a checkerboard is two red texels and two green — the same
+  blend a mip level holds, so the case would pass with no mips at all.
+
+And one lesson that is not about the GPU at all:
+
+- **eacp builds as a unity build in CI and this plan tells you to configure it
+  off.** `MipChain.cpp` declared `Block` in an anonymous namespace and
+  `ShaderGraph.cpp` already had one; an anonymous namespace does not separate
+  two files that a unity build concatenates into a single translation unit, so
+  every use of either became ambiguous. The collision *does not exist* in the
+  `-DEACP_UNITY_BUILD=OFF` tree §0.3 asks for. `EACP_CI_BUILD=ON` mirrors CI's
+  flags exactly, and a second build tree configured with it catches this class
+  before a push — which is the same shape as the counter-less GPU in Phase 4b:
+  a configuration the developer machine does not enter by default.
+
+**Then** the glTF corpus with `cgltf`, using this backend's ImGui overlay as the
+inspector, which by now is free. Everything §2.2 wanted in place first is: GPU
+timings to make optimisation decisions with, and the full Tier 1 set — mips,
+face culling, depth compare and write control, viewport — to draw with.
 
 ---
 
