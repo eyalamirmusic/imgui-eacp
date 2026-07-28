@@ -13,39 +13,38 @@ wiring for that is the first thing to get right.
 
 ## Where this stands
 
-All four phases have landed. Each has a branch of the same name in *both*
-repositories, stacked so that each contains the ones before it; §3 carries what
-each one actually cost and what the plan got wrong about it.
+Phases 1–4 are on `main` in both repositories. §3 carries what each one actually
+cost and what the plan got wrong about it.
 
 | Phase | Branch | State |
 | --- | --- | --- |
-| 1 — base vertex (§1.1) | `gpu-base-vertex` | Done, both backends |
-| 2 — streaming buffers (§1.2) | `gpu-streaming-buffer` | Done, both backends |
-| 3 — packed vertex formats (§1.3) | `gpu-packed-formats` | Done, both backends |
-| 4a — `Bench`, CPU side (§2.2) | `gpu-packed-formats` | Done, this repo only |
-| 4b — timestamp queries (§2.2) | `gpu-timestamps` | Done, both backends |
+| 1 — base vertex (§1.1) | `gpu-base-vertex` | Done, both backends, merged |
+| 2 — streaming buffers (§1.2) | `gpu-streaming-buffer` | Done, both backends, merged |
+| 3 — packed vertex formats (§1.3) | `gpu-packed-formats` | Done, both backends, merged |
+| 4a — `Bench`, CPU side (§2.2) | `gpu-packed-formats` | Done, this repo only, merged |
+| 4b — timestamp queries (§2.2) | `gpu-timestamps` | Done, both backends, merged |
+| 5 — pipeline state (§3) | `gpu-pipeline-state` | Done, both backends, unmerged |
 
-None of it is merged. Both repositories sit on `gpu-timestamps`, four branches
-deep, and **this repository's CI cannot pass until eacp's side is on eacp
-`main`** — `CMake/FindEACP.cmake` fetches `GIT_TAG main`, so CI here has been
-building against an eacp with no `UNorm8x4`, no `StreamingBuffers` and no
-timings since Phase 3:
+The merge order is eacp first, always. `CMake/FindEACP.cmake` fetches
+`GIT_TAG main`, so between Phase 3 landing here and eacp's side reaching eacp
+`main`, this repository's CI was red on a structural rather than a real failure:
 
 ```
 DrawRenderer.h(21): error C2039: 'UNorm8x4': is not a member of 'eacp::GPU'
 ```
 
-That is structural rather than a mistake, but it means the merge order is
-eacp first, and that this repository's CI says nothing at all until then.
+Worth remembering rather than rediscovering — while a phase is in flight here,
+this repository's CI says nothing at all.
 
-eacp's `GPUTests` is **159 passed, 0 failed**, up from 141 before any of this.
+eacp's `GPUTests` is **168 passed, 0 failed**, up from 141 before any of this.
 Every new assertion was checked against the failure it exists for by breaking
 the thing deliberately and watching it fail — the base vertex pinned back to
 zero, `StreamingBuffers::write` reverted to allocating per call, Metal's
 `UByte4Norm` pointed at the non-normalized format, the GPU tick scale put out by
-the mach timebase, a pass's two sample indices swapped. None of them is a build
-error, and none shows up as anything but wrong pixels, a rising counter or a
-number that is quietly the wrong size.
+the mach timebase, a pass's two sample indices swapped, a cull mode that never
+reached the encoder. None of them is a build error, and none shows up as
+anything but wrong pixels, a rising counter or a number that is quietly the
+wrong size.
 
 `DrawRenderer` is the visible result in this repo: 16-bit indices copied with
 one `memcpy`, no buffer rotation of its own, and a 20-byte vertex — against
@@ -57,15 +56,18 @@ tested.** Every phase above was written blind for D3D12 and described here as
 unverified, on the assumption that a Windows machine was needed to say
 otherwise. It was not: eacp's CI runners have a working D3D12 device, so
 `Tests/GPU` does not self-skip there — it *renders and reads pixels back*.
-`gpu-timestamps` is green at **794/794 on Windows MSVC, Windows Clang, Windows
-MSVC ARM64 and Windows Clang ARM64**, `BaseVertex`, `VertexFormat` and
-`FrameTiming` among them.
+`gpu-pipeline-state` is green at **803/803 on Windows MSVC, Windows Clang,
+Windows MSVC ARM64 and Windows Clang ARM64**, `BaseVertex`, `VertexFormat`,
+`FrameTiming` and `PipelineState` among them.
 
 So the two `RenderPipeline` mapping tables in §1.3 — the part of this plan most
 likely to be silently wrong, since a bad entry is not a build error on either
 side — have been checked by the conformance test on the backend they were
 written blind for. Worth knowing for the phases after this one: pushing a branch
 *is* the Windows check, and waiting for hardware to do it was never necessary.
+Phase 5 was written that way deliberately and settled a question — whether the
+two APIs call the same triangle front-facing — that no single machine could
+have answered.
 
 What CI caught that a developer machine could not is the opposite case, and it
 was on Apple's side: its macOS runners have a paravirtualised GPU that cannot
@@ -800,9 +802,72 @@ Three things worth carrying forward:
   entered. It reproduces locally by forcing `supported` false, which is how the
   fix was checked both ways.
 
-**Then** the glTF corpus, `cgltf`, and the Tier 1 renderer gaps — mips, face
-culling, depth compare/write control, viewport — with this backend's ImGui
-overlay as the inspector, which by then is free.
+**Phase 5 — pipeline state a mesh renderer needs.** The first two of the Tier 1
+gaps, and the first phase with nothing in this repository: ImGui is 2D, draws no
+depth and culls nothing, so there is no consumer here. It is groundwork for the
+glTF work, which §2.2 said this point in the plan was for.
+
+Done when: a pipeline can say which faces to throw away and what its depth test
+does, and the two backends agree about both.
+
+**Status: done on `gpu-pipeline-state` (eacp only), verified on both backends.**
+The suite is 168 passed, 0 failed locally and **803 on all four Windows
+toolchains**, up from 159 / 794.
+
+`RenderPipelineDescriptor` gained four fields, every one defaulted to what was
+previously hardcoded, so nothing already drawing changes:
+
+```cpp
+CullMode     cullMode     = CullMode::None;
+Winding      frontFace    = Winding::Clockwise;
+DepthCompare depthCompare = DepthCompare::LessEqual;
+bool         depthWrite   = true;
+```
+
+`depth` keeps its old meaning — whether there *is* a depth attachment, which the
+pass and the pipeline must agree on or both backends reject the draw. Splitting
+`depthWrite` off the comparison is the point of the exercise: translucent
+geometry tests against the opaque depth already written and must not write its
+own, or the nearer of two glass surfaces hides the further one instead of
+blending over it. One `bool depth` could not express that at all.
+
+`ShaderProgram::prepare` gained a descriptor overload rather than two more
+defaulted parameters — five positional arguments was already where a call site
+stopped being readable, and every future setting would have had to be repeated
+in that signature.
+
+Four things worth carrying forward:
+
+- **Metal and D3D12 agree on which triangle is front-facing.** Both decide
+  facing after the viewport transform, so `Winding::Clockwise` means clockwise
+  on the rendered image on either backend. `PipelineStateTests` asserts that
+  *absolutely* rather than only that the two vertex orderings differ — a
+  relative assertion passes on both backends even when they disagree, and
+  portable culling was the whole point. CI is what settled it.
+- **Culling is the one setting where the APIs disagree about *when* state is
+  fixed**, not about what it is called: D3D12 bakes it into the pipeline object,
+  Metal sets it on the encoder. Resolved the way `topology` already was. The
+  trap is applying it only when it culls something — then a pass drawing a
+  culled mesh and then a full-screen quad loses half the quad, on Metal only.
+  There is a case for exactly that.
+- **A case that passes for one reason is worth as much as one that fails.** Each
+  of the nine is a *pair* differing in one field with opposite expected results.
+  That shape is what catches a field ignored outright, since ignoring it makes
+  both halves agree — a single-outcome case cannot tell "this field works" from
+  "something here draws green". Two drafts had both halves expecting the same
+  colour and were rewritten.
+- **Every assertion was checked against the failure it exists for**, as in every
+  phase before it: the cull mode never reaching the encoder, the winding pinned
+  to its default, the cull mode applied conditionally, `depthWriteEnabled`
+  pinned on, the comparison pinned to less-equal. Each break was caught by
+  precisely the cases naming it and by no others.
+
+Also worth noting: this was the first test to exercise D3D12's off-screen depth
+attachment at all. It was written and correct — but nothing had ever run it.
+
+**Then** the rest of the Tier 1 gaps — mips and viewport — and the glTF corpus
+with `cgltf`, using this backend's ImGui overlay as the inspector, which by then
+is free.
 
 ---
 
