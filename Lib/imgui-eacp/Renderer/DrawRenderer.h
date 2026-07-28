@@ -9,16 +9,18 @@
 
 namespace eacp::Gui
 {
-// The vertex the pipeline consumes. ImDrawVert packs its colour into a single
-// RGBA8 word and eacp's VertexFormat has no normalized-byte attribute, so the
-// colour is unpacked into floats — inside the copy from ImDrawVert that has to
-// happen anyway, so it costs no extra pass over the data, only the width.
+// The vertex the pipeline consumes — the same 20 bytes ImDrawVert is, because
+// GPU::UNorm8x4 keeps the colour the single RGBA8 word ImGui already packed it
+// into. The shader still reads a Float4; the widening happens in the vertex
+// fetch, where it is free.
 struct DrawVertex
 {
     float position[2];
     float uv[2];
-    float color[4];
+    GPU::UNorm8x4 color;
 };
+
+static_assert(sizeof(DrawVertex) == 20, "the colour is meant to stay packed");
 
 // How every ImGui texture is sampled. Sampling belongs to the shader rather
 // than the texture on this backend (see GPU::TextureSampling), so the value the

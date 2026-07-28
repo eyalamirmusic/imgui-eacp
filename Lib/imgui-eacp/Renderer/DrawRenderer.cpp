@@ -26,9 +26,13 @@ void DrawShader::define()
 
 namespace
 {
-float channel(ImU32 color, int shift)
+// By the shifts rather than copying the word straight through: the default
+// packing already has the bytes in RGBA order, but IMGUI_USE_BGRA_PACKED_COLOR
+// swaps two of them, and a reinterpret would draw that build in the wrong
+// colours instead of failing.
+std::uint8_t channel(ImU32 color, int shift)
 {
-    return (float) ((color >> shift) & 0xFF) / 255.0f;
+    return (std::uint8_t) ((color >> shift) & 0xFF);
 }
 
 // Whatever ImGui was built with. The indices are copied through untouched, so
@@ -139,10 +143,10 @@ void DrawRenderer::appendVertices(const ImDrawList& list)
         to.position[1] = from.pos.y;
         to.uv[0] = from.uv.x;
         to.uv[1] = from.uv.y;
-        to.color[0] = channel(from.col, IM_COL32_R_SHIFT);
-        to.color[1] = channel(from.col, IM_COL32_G_SHIFT);
-        to.color[2] = channel(from.col, IM_COL32_B_SHIFT);
-        to.color[3] = channel(from.col, IM_COL32_A_SHIFT);
+        to.color = {{channel(from.col, IM_COL32_R_SHIFT),
+                     channel(from.col, IM_COL32_G_SHIFT),
+                     channel(from.col, IM_COL32_B_SHIFT),
+                     channel(from.col, IM_COL32_A_SHIFT)}};
     }
 }
 

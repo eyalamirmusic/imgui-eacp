@@ -11,6 +11,38 @@ wiring for that is the first thing to get right.
 
 ---
 
+## Where this stands
+
+Phases 1 to 3 have landed. Each has a branch of the same name in *both*
+repositories, stacked so that each contains the ones before it; §3 carries what
+each one actually cost and what the plan got wrong about it.
+
+| Phase | Branch | State |
+| --- | --- | --- |
+| 1 — base vertex (§1.1) | `gpu-base-vertex` | Done, Metal verified |
+| 2 — streaming buffers (§1.2) | `gpu-streaming-buffer` | Done, Metal verified |
+| 3 — packed vertex formats (§1.3) | `gpu-packed-formats` | Done, Metal verified |
+| 4 — `Bench` and timestamps (§2.2) | — | Not started |
+
+eacp's `GPUTests` is **153 passed, 0 failed**, up from 141 before any of this.
+Every new assertion was checked against the failure it exists for by breaking
+the thing deliberately and watching it fail — the base vertex pinned back to
+zero, `StreamingBuffers::write` reverted to allocating per call, Metal's
+`UByte4Norm` pointed at the non-normalized format. None of the three is a build
+error, and none shows up as anything but wrong pixels or a rising counter.
+
+`DrawRenderer` is the visible result in this repo: 16-bit indices copied with
+one `memcpy`, no buffer rotation of its own, and a 20-byte vertex — against
+32-bit rebased indices, three hand-rolled buffer sets and a 32-byte vertex when
+this document was written.
+
+**Everything is Metal-only verified.** All of it is written for both backends
+and none of it has run on Windows. The tests are cross-platform and will run
+there; the two `RenderPipeline` mapping tables in §1.3 are the part where that
+matters most, since a wrong entry there is not a build error on either side.
+
+---
+
 ## 0. Working setup
 
 ### 0.1 A dedicated eacp checkout
@@ -583,8 +615,47 @@ conformance harness from Phase 1 exists to copy.
 Done when: `VertexFormatTests` passes on both backends and `DrawVertex` is back
 to 20 bytes.
 
-**Phase 4 — the `Bench` app and timestamp queries (§2.2).** Fold Layer 1 in
-alongside Phase 2, since it is what shows Phase 2 worked. Layer 2 after Phase 3.
+**Status: done on `gpu-packed-formats` (both repos), Metal verified.** Suite is
+153 passed, 0 failed. `DrawVertex` is 20 bytes, asserted at compile time.
+
+The conformance test was checked against the mistake it exists for: with Metal's
+`UByte4Norm` pointed at `MTLVertexFormatUChar4` (the plain integer variant
+rather than the Normalized one) and `Half2` at `Float2`, the two comparison
+cases fail. Both are silent errors — the pipeline still builds and the draw
+still happens — which is why the file compares two renders rather than checking
+colours against constants.
+
+Three things worth carrying forward:
+
+- **`toVertexFormat` had to become `constexpr`.** It was `inline`, and the
+  format is now needed as a template constant rather than a runtime value.
+- **A shader with no uniforms still needs `EACP_SHADER()`**, empty.
+  `reflectMembers` is pure virtual, so a program without the macro is abstract
+  and the error names the field rather than the cause.
+- **Half needed a CPU-side conversion**, which the plan did not budget for:
+  MSVC has no `_Float16`, so `halfFromFloat`/`halfToFloat` are written out in
+  `PackedVertex.cpp` and tested directly, edges included.
+
+The CPU wrapper types are named for what they store — `UNorm8x4`, `Float16x2`,
+`Float16x4`, `SNorm16x2`, `SNorm16x4` — while the `VertexFormat` entries keep
+the graphics-API spelling (`UByte4Norm`, `Half2`) that a Metal or D3D12 table
+uses. `Half3` and a three-component normalized short are deliberately absent:
+D3D12 has no 16-bit three-component vertex format, so either would work on
+Metal and fail to build a pipeline on Windows.
+
+**Phase 4 — the `Bench` app and timestamp queries (§2.2).** The plan folded
+Layer 1 in alongside Phase 2, since it is what shows Phase 2 worked. That did
+not happen: the `Demo` panel's `Device::buffersCreated()` readout answered the
+one question Phase 2 had to answer, and building a whole app to ask it again
+would have held the phase up for nothing.
+
+So Layer 1 is still owed, and its remaining value is the part the Demo panel
+does not cover — a *controlled* workload rather than whatever the demo window
+happens to contain, and `prepare()`/`encode()` timings as percentiles rather
+than a frame rate. No baseline against eacp `main` was ever recorded, and now
+cannot be without checking the old code back out; the numbers to compare
+against are the ones in §1.1 and §1.3 (index bytes halved, vertex 32 → 20),
+which are arithmetic rather than measurements. Layer 2 is unblocked.
 
 **Then** the glTF corpus, `cgltf`, and the Tier 1 renderer gaps — mips, face
 culling, depth compare/write control, viewport — with this backend's ImGui

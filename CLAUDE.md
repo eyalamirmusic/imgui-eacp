@@ -93,6 +93,11 @@ global `ImGui` namespace for every call inside it.
   That is also why `ImGuiBackendFlags_RendererHasVtxOffset` can be set. Don't
   reintroduce rebasing: it doubles the index buffer and costs a pass over every
   index in the frame.
+- **The colour stays packed.** `DrawVertex::color` is a `GPU::UNorm8x4`, the same
+  four bytes `ImDrawVert` holds, and the vertex is 20 bytes rather than 32.
+  `define()` still reads a `Float4` — both backends widen the attribute during
+  the vertex fetch, in hardware. Expanding it to four floats on the CPU costs
+  1.6× the vertex bandwidth to say nothing new.
 - **Sampling is on the shader, not the texture.** `GPU::TextureSampling` is
   baked in at compile time (a Windows driver bug — see eacp's `SAMPLERS.md`), so
   `drawSampling` is one constant used both by `DrawShader`'s constructor and by
