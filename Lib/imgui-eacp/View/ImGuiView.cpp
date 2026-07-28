@@ -267,7 +267,9 @@ void ImGuiView::render(GPU::Frame& frame)
     renderer.prepare(*drawData);
     updateCursor();
 
-    auto pass = frame.beginPass({options.clearColor});
+    auto pass = frame.beginPass({.clearColor = options.clearColor,
+                                 .clear = true,
+                                 .label = options.passLabel});
     renderer.encode(pass);
 }
 

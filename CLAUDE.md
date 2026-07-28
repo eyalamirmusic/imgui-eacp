@@ -109,6 +109,11 @@ global `ImGui` namespace for every call inside it.
   `drawSampling` is one constant used both by `DrawShader`'s constructor and by
   every `setFragmentTexture` call. Changing one without the other makes the two
   backends draw differently.
+- **The view's pass is unlabelled by default.** `ViewOptions::passLabel` is what
+  asks eacp's GPU timer to measure the pass, and timing costs two hardware
+  counter samples per pass — so an app that never reads
+  `GPU::Device::lastFrameTimings()` should not be paying for it. `Apps/Bench`
+  sets it; `Demo` does not.
 - **The renderer times itself.** `getPrepareTime()` / `getEncodeTime()` are two
   clock reads a frame, below the noise of everything they bracket, and they are
   what `Apps/Bench` reports percentiles of. They are not behind a build switch

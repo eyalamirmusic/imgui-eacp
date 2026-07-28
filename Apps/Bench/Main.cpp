@@ -61,8 +61,66 @@ void drawTiming(const char* label, const Bench::FrameStats& stats)
                      {0.0f, 40.0f});
 }
 
+// One frame of GPU time as a strip: each labelled pass a segment as wide as its
+// share of the frame, and whatever is left over the part of the frame that was
+// not any of them.
+//
+// A bar rather than a number because the question it answers is a proportion —
+// how much of the frame the UI actually is — and because with more than one
+// pass a column of milliseconds does not show where the time went.
+void drawFlameStrip(const GPU::FrameTimings& timings)
+{
+    constexpr auto height = 22.0f;
+
+    const auto width = ImGui::GetContentRegionAvail().x;
+    const auto origin = ImGui::GetCursorScreenPos();
+    const auto bottom = ImVec2 {origin.x + width, origin.y + height};
+
+    auto* list = ImGui::GetWindowDrawList();
+    list->AddRectFilled(origin, bottom, IM_COL32(32, 36, 44, 255), 3.0f);
+
+    ImGui::Dummy({width, height});
+
+    if (timings.milliseconds <= 0.0 || width <= 0.0f)
+        return;
+
+    auto left = origin.x;
+
+    for (auto index = 0; index < timings.passes.size(); ++index)
+    {
+        const auto& pass = timings.passes[index];
+        const auto share = (float) (pass.milliseconds / timings.milliseconds);
+        const auto right = std::min(left + share * width, bottom.x);
+
+        if (right <= left)
+            continue;
+
+        const auto color =
+            (ImU32) ImColor::HSV(0.55f - (float) index * 0.13f, 0.6f, 0.85f);
+
+        list->AddRectFilled({left, origin.y}, {right, bottom.y}, color, 3.0f);
+
+        // Clipped rather than measured and skipped: a segment too narrow for
+        // its name still shows the colour, and the row below names it anyway.
+        list->PushClipRect({left, origin.y}, {right, bottom.y}, true);
+        list->AddText({left + 4.0f, origin.y + 3.0f},
+                      IM_COL32(16, 18, 22, 255),
+                      pass.label.c_str());
+        list->PopClipRect();
+
+        left = right;
+    }
+}
+
 struct BenchView final : Gui::ImGuiView
 {
+    // The pass has to be named for the hardware to time it at all, and this is
+    // the app whose whole job is reading those numbers.
+    BenchView()
+        : Gui::ImGuiView(Gui::ViewOptions {.passLabel = "imgui"})
+    {
+    }
+
     void draw() override
     {
         sample();
@@ -89,6 +147,19 @@ struct BenchView final : Gui::ImGuiView
         lastBufferCount = created;
 
         bufferStats.add((float) buffersThisFrame);
+
+        // Only when a new one has arrived. GPU timings come back a few frames
+        // late, so the same frame's numbers are still there on the frames in
+        // between - adding them again would count one frame several times and
+        // quietly weight the percentiles towards whatever the GPU was slowest
+        // at.
+        const auto& timings = GPU::Device::shared().lastFrameTimings();
+
+        if (timings.frameIndex != lastTimedFrame)
+        {
+            lastTimedFrame = timings.frameIndex;
+            gpuStats.add((float) (timings.milliseconds * 1000.0));
+        }
     }
 
     void drawReport()
@@ -116,6 +187,7 @@ struct BenchView final : Gui::ImGuiView
         drawTiming("prepare", prepareStats);
         drawTiming("encode", encodeStats);
 
+        drawGpu();
         drawGeometry(io.Framerate);
         drawAllocations();
 
@@ -124,9 +196,53 @@ struct BenchView final : Gui::ImGuiView
             prepareStats.clear();
             encodeStats.clear();
             bufferStats.clear();
+            gpuStats.clear();
         }
 
         ImGui::End();
+    }
+
+    // What the hardware spent, as against what the CPU spent above it. The two
+    // are not the same question and a frame can be limited by either — which is
+    // the whole reason for a section that reads the GPU's own clock rather than
+    // inferring anything from the frame rate.
+    void drawGpu()
+    {
+        ImGui::SeparatorText("GPU (microseconds)");
+
+        auto& device = GPU::Device::shared();
+        const auto& timings = device.lastFrameTimings();
+
+        if (timings.frameIndex == 0)
+        {
+            ImGui::TextDisabled("waiting for the first frame to come back");
+            return;
+        }
+
+        // Timings are for a frame that has already been drawn — a timestamp
+        // cannot exist until the GPU has run the work — so the panel says which
+        // one rather than implying it is describing the frame on screen.
+        ImGui::Text("frame %7.1f      %llu frames back",
+                    timings.milliseconds * 1000.0,
+                    (unsigned long long) (device.frameIndex() - timings.frameIndex));
+
+        drawTiming("gpu", gpuStats);
+
+        if (!device.supportsPassTimings())
+        {
+            ImGui::TextDisabled("no per-pass counters on this device");
+            return;
+        }
+
+        drawFlameStrip(timings);
+
+        for (const auto& pass: timings.passes)
+            ImGui::Text("%-8s %7.1f   (%.0f%% of the frame)",
+                        pass.label.c_str(),
+                        pass.milliseconds * 1000.0,
+                        timings.milliseconds > 0.0
+                            ? 100.0 * pass.milliseconds / timings.milliseconds
+                            : 0.0);
     }
 
     void drawGeometry(float framerate)
@@ -195,6 +311,9 @@ struct BenchView final : Gui::ImGuiView
     Bench::FrameStats prepareStats;
     Bench::FrameStats encodeStats;
     Bench::FrameStats bufferStats;
+    Bench::FrameStats gpuStats;
+
+    std::uint64_t lastTimedFrame = 0;
 
     int lastBufferCount = 0;
     int buffersThisFrame = 0;

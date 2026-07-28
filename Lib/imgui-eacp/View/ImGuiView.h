@@ -47,6 +47,16 @@ struct ViewOptions
     // which is the right default for an app bundle whose working directory is
     // not somewhere it should be writing.
     const char* iniFilename = nullptr;
+
+    // Names this view's render pass for eacp's GPU timer, which is also what
+    // asks for it to be timed: the pass then turns up in
+    // GPU::Device::lastFrameTimings() with how long the hardware spent on it.
+    //
+    // Empty by default, because timing is not free — it is two hardware counter
+    // samples per pass — and an app that never looks at the numbers should not
+    // pay for them. A window holding two ImGuiViews gives them different names
+    // here, or the breakdown has two rows that cannot be told apart.
+    std::string passLabel;
 };
 
 // A Dear ImGui surface that is an ordinary eacp View.

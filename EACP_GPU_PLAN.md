@@ -23,14 +23,16 @@ each one actually cost and what the plan got wrong about it.
 | 2 — streaming buffers (§1.2) | `gpu-streaming-buffer` | Done, Metal verified |
 | 3 — packed vertex formats (§1.3) | `gpu-packed-formats` | Done, Metal verified |
 | 4a — `Bench`, CPU side (§2.2) | `gpu-packed-formats` | Done, this repo only |
-| 4b — timestamp queries (§2.2) | — | Not started |
+| 4b — timestamp queries (§2.2) | `gpu-timestamps` | Done, Metal verified |
 
-eacp's `GPUTests` is **153 passed, 0 failed**, up from 141 before any of this.
+eacp's `GPUTests` is **159 passed, 0 failed**, up from 141 before any of this.
 Every new assertion was checked against the failure it exists for by breaking
 the thing deliberately and watching it fail — the base vertex pinned back to
 zero, `StreamingBuffers::write` reverted to allocating per call, Metal's
-`UByte4Norm` pointed at the non-normalized format. None of the three is a build
-error, and none shows up as anything but wrong pixels or a rising counter.
+`UByte4Norm` pointed at the non-normalized format, the GPU tick scale put out by
+the mach timebase, a pass's two sample indices swapped. None of them is a build
+error, and none shows up as anything but wrong pixels, a rising counter or a
+number that is quietly the wrong size.
 
 `DrawRenderer` is the visible result in this repo: 16-bit indices copied with
 one `memcpy`, no buffer rotation of its own, and a 20-byte vertex — against
@@ -534,18 +536,26 @@ numbers in this file.
 **Layer 2 — GPU side. A module feature, and a prerequisite for the engine work.**
 
 Timestamp queries: `MTLCounterSampleBuffer` on Metal, an `ID3D12QueryHeap` of
-`D3D12_QUERY_TYPE_TIMESTAMP` plus `GetTimestampFrequency` on D3D12. A minimal
-API that fits the existing shapes:
+`D3D12_QUERY_TYPE_TIMESTAMP` plus `GetTimestampFrequency` on D3D12.
+
+~~A minimal API that fits the existing shapes: `Frame::mark(std::string_view)`,
+recording a timestamp at that point in the command buffer.~~ **Not possible on
+Metal.** `[MTLDevice supportsCounterSampling:]` on an M5 Max answers yes to
+`AtStageBoundary` and no to all four of `AtDrawBoundary`, `AtBlitBoundary`,
+`AtDispatchBoundary` and `AtTileDispatchBoundary` — so a timestamp can be taken
+where a pass begins and ends, and nowhere else. There is no mechanism for a mark
+in the middle of a frame to be built on.
+
+So the unit is the pass, and a pass is timed by naming it:
 
 ```cpp
-// On Frame: records a timestamp at this point in the command buffer. Results
-// resolve after the GPU has finished the frame, so they arrive framesInFlight
-// frames late — a profiler reads the recent past, not the current frame.
-void mark(std::string_view label);
+auto pass = frame.beginPass({.clearColor = c, .label = "ui"});
 ```
 
-with `Device::lastFrameTimings()` handing back label → microseconds, and the
-`Bench` app rendering it as a flame strip.
+with `Device::lastFrameTimings()` handing back label → milliseconds plus the
+frame end to end, and the `Bench` app rendering it as a flame strip. An
+unlabelled pass is not timed and costs nothing, which is what keeps this off the
+bill for an app that never looks.
 
 **Scope.** This is Tier 3 work and must not block §1.1–§1.3, none of which need
 it. But it should land *before* the glTF/renderer phase: past that point, every
@@ -704,6 +714,49 @@ Three things worth carrying forward:
   single-frame event, so a live "+N this frame" shows it for one 120th of a
   second and then forgets. The ring keeps the worst frame in the last 512, which
   is the form the number is actually usable in.
+
+**Status of Layer 2: done on `gpu-timestamps` (both repos), Metal verified.**
+The suite is 159 passed, 0 failed, up from 153.
+
+What shipped is per-pass timing rather than the `mark()` in §2.2, for the
+hardware reason recorded there. The shape:
+
+- `Timing/FrameTimings.h` — `PassTiming` and `FrameTimings`, the results.
+- `Timing/GpuTimestamps.h` + two backend files — the seam. This is where the
+  backends stop resembling each other, and drawing the line here is what keeps
+  the ring of frame slots portable.
+- `Timing/FrameTimer.{h,cpp}` — that ring. A frame writes into the slot for
+  `frameIndex % 4` and a slot is read only once the backend says the GPU has
+  finished with it, so nothing anywhere waits.
+- `Device::beginFrame()` drives it, exactly as it drives `StreamingBuffers` —
+  one advance, nothing for an app to call, nothing to forget.
+
+`ImGuiView` gained `ViewOptions::passLabel`, empty by default: two counter
+samples a pass is not much, but an app that never reads the numbers should not
+be paying for them.
+
+Numbers from `Bench`, same default load as Layer 1: the GPU frame is **238µs
+p50 / 284µs p95**, of which the `imgui` pass is all of it — there is only the
+one pass — against 53µs of `prepare` and 21µs of `encode` on the CPU. So this
+load is nowhere near either limit at 120Hz, which is the first thing the two
+layers together are able to say.
+
+Three things worth carrying forward:
+
+- **Apple silicon samples at stage boundaries and nowhere else.** Probed rather
+  than assumed, and it is the fact the whole API shape rests on. Worth
+  re-probing on any new hardware before assuming a mark can be put anywhere.
+- **`sampleTimestamps` hands back nanoseconds, not `mach_absolute_time` ticks.**
+  Multiplying by the mach timebase — 125/3, or 41.667ns a tick on Apple silicon
+  — put every pass out by that factor, and the first version of the bounds test
+  had a one-millisecond tolerance that waved it straight through: two passes
+  reading 0.19ms each sat inside a frame reading 0.02ms. Two numbers from
+  different clocks need a check tight enough to notice they disagree, which is
+  now `sum(passes) <= frame + 0.05ms`.
+- **A new field on `RenderPassDescriptor` needs its own initialiser.** Without
+  `= {}` on the new `label`, every `beginPass({colour})` already in eacp warns
+  under `-Wmissing-field-initializers`. Three unrelated files turned it up
+  immediately, which is the warning doing its job.
 
 **Then** the glTF corpus, `cgltf`, and the Tier 1 renderer gaps — mips, face
 culling, depth compare/write control, viewport — with this backend's ImGui
