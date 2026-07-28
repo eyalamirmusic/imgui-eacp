@@ -13,17 +13,30 @@ wiring for that is the first thing to get right.
 
 ## Where this stands
 
-Phases 1 to 3 have landed. Each has a branch of the same name in *both*
+All four phases have landed. Each has a branch of the same name in *both*
 repositories, stacked so that each contains the ones before it; §3 carries what
 each one actually cost and what the plan got wrong about it.
 
 | Phase | Branch | State |
 | --- | --- | --- |
-| 1 — base vertex (§1.1) | `gpu-base-vertex` | Done, Metal verified |
-| 2 — streaming buffers (§1.2) | `gpu-streaming-buffer` | Done, Metal verified |
-| 3 — packed vertex formats (§1.3) | `gpu-packed-formats` | Done, Metal verified |
+| 1 — base vertex (§1.1) | `gpu-base-vertex` | Done, both backends |
+| 2 — streaming buffers (§1.2) | `gpu-streaming-buffer` | Done, both backends |
+| 3 — packed vertex formats (§1.3) | `gpu-packed-formats` | Done, both backends |
 | 4a — `Bench`, CPU side (§2.2) | `gpu-packed-formats` | Done, this repo only |
-| 4b — timestamp queries (§2.2) | `gpu-timestamps` | Done, Metal verified |
+| 4b — timestamp queries (§2.2) | `gpu-timestamps` | Done, both backends |
+
+None of it is merged. Both repositories sit on `gpu-timestamps`, four branches
+deep, and **this repository's CI cannot pass until eacp's side is on eacp
+`main`** — `CMake/FindEACP.cmake` fetches `GIT_TAG main`, so CI here has been
+building against an eacp with no `UNorm8x4`, no `StreamingBuffers` and no
+timings since Phase 3:
+
+```
+DrawRenderer.h(21): error C2039: 'UNorm8x4': is not a member of 'eacp::GPU'
+```
+
+That is structural rather than a mistake, but it means the merge order is
+eacp first, and that this repository's CI says nothing at all until then.
 
 eacp's `GPUTests` is **159 passed, 0 failed**, up from 141 before any of this.
 Every new assertion was checked against the failure it exists for by breaking
@@ -39,10 +52,25 @@ one `memcpy`, no buffer rotation of its own, and a 20-byte vertex — against
 32-bit rebased indices, three hand-rolled buffer sets and a 32-byte vertex when
 this document was written.
 
-**Everything is Metal-only verified.** All of it is written for both backends
-and none of it has run on Windows. The tests are cross-platform and will run
-there; the two `RenderPipeline` mapping tables in §1.3 are the part where that
-matters most, since a wrong entry there is not a build error on either side.
+~~**Everything is Metal-only verified.**~~ **The D3D12 side runs, and is
+tested.** Every phase above was written blind for D3D12 and described here as
+unverified, on the assumption that a Windows machine was needed to say
+otherwise. It was not: eacp's CI runners have a working D3D12 device, so
+`Tests/GPU` does not self-skip there — it *renders and reads pixels back*.
+`gpu-timestamps` is green at **794/794 on Windows MSVC, Windows Clang, Windows
+MSVC ARM64 and Windows Clang ARM64**, `BaseVertex`, `VertexFormat` and
+`FrameTiming` among them.
+
+So the two `RenderPipeline` mapping tables in §1.3 — the part of this plan most
+likely to be silently wrong, since a bad entry is not a build error on either
+side — have been checked by the conformance test on the backend they were
+written blind for. Worth knowing for the phases after this one: pushing a branch
+*is* the Windows check, and waiting for hardware to do it was never necessary.
+
+What CI caught that a developer machine could not is the opposite case, and it
+was on Apple's side: its macOS runners have a paravirtualised GPU that cannot
+sample counters at all, which is a configuration no machine here can produce.
+See §3, Phase 4b.
 
 ---
 
@@ -757,6 +785,20 @@ Three things worth carrying forward:
   `= {}` on the new `label`, every `beginPass({colour})` already in eacp warns
   under `-Wmissing-field-initializers`. Three unrelated files turned it up
   immediately, which is the warning doing its job.
+- **A device with no counters wedged the timer, and CI found it.** A slot the
+  timer waits on has to be answerable or it is never recycled, and four of those
+  is the timer off for the rest of the process. That is what an unsupported
+  device got: `endSlot` returned early without keeping the command buffer, so
+  nothing ever completed — including the frame total that needs no counters and
+  was documented as still working. `endSlot` now reports whether the slot will
+  have an answer and the timer only leaves it pending if it will.
+
+  The point worth carrying: this failed on *macOS*, the platform it was
+  developed on, because GitHub's runners are paravirtualised and this machine is
+  not. A capability check with a fallback path has a second configuration in it
+  that the developer's hardware may be unable to enter, and CI is where it gets
+  entered. It reproduces locally by forcing `supported` false, which is how the
+  fix was checked both ways.
 
 **Then** the glTF corpus, `cgltf`, and the Tier 1 renderer gaps — mips, face
 culling, depth compare/write control, viewport — with this backend's ImGui
