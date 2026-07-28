@@ -132,8 +132,8 @@ void ImGuiView::configureContext()
 
     // HasTextures is what lets ImGui grow the atlas a glyph at a time instead
     // of rebuilding it, and HasVtxOffset lets it keep a window's geometry in
-    // one draw list past 64k vertices — the renderer rebases indices, so both
-    // are true here.
+    // one draw list past 64k vertices — the renderer hands every draw a base
+    // vertex, so both are true here.
     io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
     io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
     io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors;

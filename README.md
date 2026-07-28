@@ -85,11 +85,11 @@ Geometry lives in three rotating buffer sets, one per frame that may be in
 flight. The UI is rebuilt from scratch every tick, and writing into a buffer a
 frame still on the GPU is reading tears the picture.
 
-Indices are rebased as they are copied, so every draw list shares one vertex
-stream: `drawIndexed` takes a first index but no base vertex, so the offset is
-baked into the index values, which is also why the buffer is 32-bit whatever
-`ImDrawIdx` is. That is what lets `ImGuiBackendFlags_RendererHasVtxOffset` be
-set, so ImGui keeps a window's geometry in one draw list past 64k vertices.
+Every draw list shares one vertex stream, and each draw carries its own base
+vertex to say where its list starts in it — so the indices are copied through
+untouched and stay `ImDrawIdx`-wide, 16 bits by default. That is also what lets
+`ImGuiBackendFlags_RendererHasVtxOffset` be set, so ImGui keeps a window's
+geometry in one draw list past 64k vertices.
 
 `ImGuiBackendFlags_RendererHasTextures` is set too, so the font atlas grows one
 glyph at a time through `Texture::update`'s region overload instead of being

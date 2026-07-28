@@ -539,6 +539,16 @@ parameter. Any friction in §0 surfaces here, where nothing else is in flight.
 Done when: `BaseVertexTests` passes on at least one backend, `DrawRenderer` no
 longer rebases indices, and its index buffer is `ImDrawIdx`-width.
 
+**Status: done on `gpu/base-vertex` (both repos), Metal verified.** The eacp
+side is the two signatures plus four call sites; `ShaderProgram.h` needed no
+change after all, because the `draw(Program&)` templates live in `RenderPass.h`
+and the defaulted parameter covers them. `BaseVertexTests.cpp` has four cases
+(plain and instanced, offset and zero) and they were confirmed to fail with the
+Metal `baseVertex` pinned back to `0`, so they test what they claim to; the
+whole suite is 141 passed, 0 failed. `DrawRenderer` now copies indices with one
+`memcpy` and passes `base + VtxOffset` per draw; `Demo` renders identically.
+D3D12 is written but unverified — no Windows machine in this loop.
+
 **Phase 2 — streaming buffers (§1.2).** The highest-value item. Land
 `Device::buffersCreated()` in the same branch, since it is how the change is
 demonstrated.

@@ -84,10 +84,12 @@ global `ImGui` namespace for every call inside it.
 - **Three rotating buffer sets.** The geometry is rewritten every frame, and
   writing into a buffer a frame still on the GPU is reading tears the picture.
   `Buffer::update` does not synchronise against frames in flight.
-- **32-bit indices, rebased on copy.** `RenderPass::drawIndexed` takes a first
-  index but no base vertex, so every draw list's offset is baked into the index
-  values. That is what lets one vertex buffer serve every list, and why
-  `ImGuiBackendFlags_RendererHasVtxOffset` can be set.
+- **`ImDrawIdx`-width indices, copied verbatim.** One vertex buffer serves every
+  draw list, and `RenderPass::drawIndexed`'s `baseVertex` says where each list
+  starts in it — so nothing is added into the index values and they stay 16-bit.
+  That is also why `ImGuiBackendFlags_RendererHasVtxOffset` can be set. Don't
+  reintroduce rebasing: it doubles the index buffer and costs a pass over every
+  index in the frame.
 - **Sampling is on the shader, not the texture.** `GPU::TextureSampling` is
   baked in at compile time (a Windows driver bug — see eacp's `SAMPLERS.md`), so
   `drawSampling` is one constant used both by `DrawShader`'s constructor and by

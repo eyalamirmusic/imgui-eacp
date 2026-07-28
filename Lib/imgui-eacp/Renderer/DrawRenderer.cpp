@@ -1,6 +1,7 @@
 #include "DrawRenderer.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace eacp::Gui
 {
@@ -45,6 +46,11 @@ float channel(ImU32 color, int shift)
 {
     return (float) ((color >> shift) & 0xFF) / 255.0f;
 }
+
+// Whatever ImGui was built with. The indices are copied through untouched, so
+// there is nothing to widen them for — 16 bits by default.
+constexpr auto drawIndexFormat =
+    sizeof(ImDrawIdx) == 2 ? GPU::IndexFormat::UInt16 : GPU::IndexFormat::UInt32;
 } // namespace
 
 DrawRenderer::DrawRenderer(int sampleCount)
@@ -156,24 +162,20 @@ void DrawRenderer::appendVertices(const ImDrawList& list)
     }
 }
 
-// Indices are rebased into one buffer as they are copied, which is what lets
-// every draw list share a single vertex stream. drawIndexed takes a first index
-// but no base vertex, so the offset has to be baked into the values themselves
-// — and that in turn is why 32-bit indices are used whatever ImDrawIdx is.
-void DrawRenderer::appendIndices(const ImDrawList& list,
-                                 const ImDrawCmd& command,
-                                 int base)
+// A straight copy. Every draw list still shares one vertex stream, but the
+// offset into it rides on the draw's base vertex instead of being added into
+// each index — so the values keep ImDrawIdx's width, and the whole frame's
+// indices are one memcpy rather than a pass with an add per element.
+void DrawRenderer::appendIndices(const ImDrawList& list, const ImDrawCmd& command)
 {
     const auto first = indices.size();
     const auto count = (int) command.ElemCount;
-    const auto offset = (std::uint32_t) (base + (int) command.VtxOffset);
 
     indices.resize(first + count);
 
-    const auto* source = list.IdxBuffer.Data + command.IdxOffset;
-
-    for (auto index = 0; index < count; ++index)
-        indices[first + index] = (std::uint32_t) source[index] + offset;
+    std::memcpy(indices.data() + first,
+                list.IdxBuffer.Data + command.IdxOffset,
+                sizeof(ImDrawIdx) * (std::size_t) count);
 }
 
 void DrawRenderer::appendList(const ImDrawList& list, ImVec2 origin, ImVec2 scale)
@@ -217,8 +219,9 @@ void DrawRenderer::appendList(const ImDrawList& list, ImVec2 origin, ImVec2 scal
         record.texture = (const GPU::Texture*) (std::uintptr_t) command.GetTexID();
         record.firstIndex = indices.size();
         record.indexCount = (int) command.ElemCount;
+        record.baseVertex = base + (int) command.VtxOffset;
 
-        appendIndices(list, command, base);
+        appendIndices(list, command);
         commands.add(record);
     }
 }
@@ -246,7 +249,7 @@ void DrawRenderer::uploadGeometry()
     auto& buffers = frames[frameIndex];
 
     const auto vertexBytes = sizeof(DrawVertex) * (std::size_t) vertices.size();
-    const auto indexBytes = sizeof(std::uint32_t) * (std::size_t) indices.size();
+    const auto indexBytes = sizeof(ImDrawIdx) * (std::size_t) indices.size();
 
     ensureCapacity(buffers.vertices, vertexBytes, GPU::BufferUsage::Vertex);
     ensureCapacity(buffers.indices, indexBytes, GPU::BufferUsage::Index);
@@ -313,8 +316,9 @@ void DrawRenderer::encode(GPU::RenderPass& pass)
         pass.setFragmentTexture(*command.texture, 0, drawSampling);
         pass.drawIndexed(*buffers.indices,
                          command.indexCount,
-                         GPU::IndexFormat::UInt32,
-                         command.firstIndex);
+                         drawIndexFormat,
+                         command.firstIndex,
+                         command.baseVertex);
     }
 
     // The pass outlives this call — anything drawn over the UI would otherwise

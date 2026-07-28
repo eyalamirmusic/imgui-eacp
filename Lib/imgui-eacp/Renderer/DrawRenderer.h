@@ -12,8 +12,8 @@ namespace eacp::Gui
 {
 // The vertex the pipeline consumes. ImDrawVert packs its colour into a single
 // RGBA8 word and eacp's VertexFormat has no normalized-byte attribute, so the
-// colour is unpacked into floats — inside the copy that rebases the indices
-// anyway, so it costs no extra pass over the data.
+// colour is unpacked into floats — inside the copy from ImDrawVert that has to
+// happen anyway, so it costs no extra pass over the data, only the width.
 struct DrawVertex
 {
     float position[2];
@@ -111,6 +111,12 @@ private:
 
         int firstIndex = 0;
         int indexCount = 0;
+
+        // Where this list's vertices start in the shared vertex buffer, plus
+        // whatever ImGui already split off as a VtxOffset. Handed to the draw
+        // rather than added into the index values, which is what keeps them at
+        // ImDrawIdx's own width.
+        int baseVertex = 0;
     };
 
     // Matches the deepest pipeline either backend runs (Metal's default
@@ -124,7 +130,7 @@ private:
 
     void appendList(const ImDrawList& list, ImVec2 origin, ImVec2 scale);
     void appendVertices(const ImDrawList& list);
-    void appendIndices(const ImDrawList& list, const ImDrawCmd& command, int base);
+    void appendIndices(const ImDrawList& list, const ImDrawCmd& command);
 
     void uploadGeometry();
     void ensureCapacity(std::optional<GPU::Buffer>& buffer,
@@ -136,7 +142,7 @@ private:
     DrawShader shader;
 
     Vector<DrawVertex> vertices;
-    Vector<std::uint32_t> indices;
+    Vector<ImDrawIdx> indices;
     Vector<DrawCommand> commands;
 
     // Owned rather than held by value: ImDrawCmd carries the address of one of
