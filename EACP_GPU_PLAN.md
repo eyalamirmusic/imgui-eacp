@@ -27,10 +27,13 @@ wrong about it.
 | 5 — culling + depth state (§3) | `gpu-pipeline-state` | Done, both backends, merged |
 | 6 — viewport (§3) | `gpu-viewport` | Done, both backends, merged |
 | 7 — mipmaps (§3) | `gpu-mipmaps` | Done, both backends, merged |
+| 8 — glTF (§5) | `mesh-gltf` | First slice done, Metal verified, unmerged |
 
-The branches were stacked, each cut from the one before, so the tip contained
+Phases 1 to 7 were stacked, each cut from the one before, so the tip contained
 all of them and landing the lot was one fast-forward per repository. Every name
-above is now strictly inside `main` and can be deleted.
+among them is now strictly inside `main` and can be deleted. Phase 8 is cut from
+`main` in each repository rather than continuing the stack, because it is the
+first phase that adds a module rather than closing a gap in one.
 
 The merge order is eacp first, always. `CMake/FindEACP.cmake` fetches
 `GIT_TAG main`, so between Phase 3 landing here and eacp's side reaching eacp
@@ -984,10 +987,12 @@ And one lesson that is not about the GPU at all:
   before a push — which is the same shape as the counter-less GPU in Phase 4b:
   a configuration the developer machine does not enter by default.
 
-**Then** the glTF corpus with `cgltf`, using this backend's ImGui overlay as the
-inspector, which by now is free. Everything §2.2 wanted in place first is: GPU
-timings to make optimisation decisions with, and the full Tier 1 set — mips,
-face culling, depth compare and write control, viewport — to draw with.
+**Phase 8 — the glTF corpus** with `cgltf`, using this backend's ImGui overlay as
+the inspector, which by now is free. Everything §2.2 wanted in place first is:
+GPU timings to make optimisation decisions with, and the full Tier 1 set — mips,
+face culling, depth compare and write control, viewport — to draw with. It is
+the first phase big enough to need a design rather than a paragraph, so it has
+its own section: **§5**.
 
 ---
 
@@ -1008,3 +1013,335 @@ face culling, depth compare and write control, viewport — to draw with.
   independent storage. Writing that down in the header is part of Phase 2, since
   after the change it becomes a property of `StreamingBuffers` rather than an
   accident of allocating every time.
+
+---
+
+## 5. Phase 8 — the glTF corpus
+
+The first phase that adds a module rather than closing a gap in one, and the
+first whose value is not a feature the GPU module was missing. Phases 1 to 7
+were each argued for by pointing at a mesh renderer that did not exist yet. This
+is that renderer, and it is therefore also the audit: every one of those seven
+either gets used here or was justified by something that never arrived.
+
+### 5.1 Which repository, and why it is not this one
+
+**eacp gets the loader and the renderer; imgui-eacp gets the inspector.**
+
+This is the same argument §1 opens with — the three gaps were moved into
+`eacp-gpu` rather than worked around here precisely so that "`Sprites`, `Text`
+and any future mesh renderer get them too". A mesh renderer that lives in the
+ImGui backend is not a mesh renderer the rest of eacp can use, and putting it
+here would make this repository the home of an engine feature that has nothing
+to do with ImGui.
+
+What genuinely belongs here is the **inspector**: a node tree, per-primitive
+counts, a material list and the pass timings, all of which want an immediate-mode
+UI and none of which want to be in eacp. So the split falls where the ImGui
+dependency does.
+
+| | Repository | Target |
+| --- | --- | --- |
+| glTF parse, CPU scene, GPU upload, the draw | eacp | `eacp-mesh` |
+| Orbit camera, node/material inspector, timings panel | imgui-eacp | `Apps/Model` |
+
+Branch `mesh-gltf` in both, cut from `main` in each rather than continuing the
+Phase 1–7 stack, and merged eacp-first for the reason §0 gives.
+
+### 5.2 The dependency
+
+`cgltf` is a single header with no `CMakeLists.txt` of its own — the same shape
+as ImGui, which this repository already handles in `CMake/FindImGui.cmake` by
+fetching `DOWNLOAD_ONLY` and declaring the target itself. eacp gets
+`CMake/FindCgltf.cmake` doing the same, alongside `FindMiro` and `FindNanoTest`.
+
+It parses and nothing else: no image decode, no GPU types, no allocator to
+adopt. The image half is already answered — `Graphics::Image::decode` reads PNG
+and JPEG through the platform codec on both backends, which is what glTF ships
+its textures as, so no second dependency is needed for the corpus to render.
+
+### 5.3 The module
+
+```
+Lib/eacp/Mesh/
+  MeshTypes.h      Vec3, Mat4, and the packed vertex
+  MeshData.h       The CPU scene: nodes, primitives, materials, images
+  GltfLoader.{h,cpp}   cgltf -> MeshData. The only file that includes cgltf.h
+  MeshRenderer.{h,cpp} MeshData -> GPU buffers, textures, draws
+  MeshShader.h     The shader, in the EDSL, like every other one
+  Mesh.h           Umbrella header
+```
+
+`MeshData` is deliberately **format-agnostic** — it names nothing glTF calls
+things and includes no cgltf header. A loader is a translation into it, so a
+second one (OBJ, or a packed runtime format) is a new file rather than a
+refactor, and `MeshRenderer` never learns what produced its input. The seam is
+also what makes the loader testable without a GPU, which is most of §5.7.
+
+**A CPU `Mat4` has to be written**, and that is worth flagging because eacp does
+not have one. The matrix helpers are all EDSL-side — `perspective`, `rotateX`,
+`translate` build a `Float4x4` *inside* `define()` from scalar uniforms, which is
+what `Apps/GPU/Teapot` does and is exactly right for one spinning object. It
+cannot work here: a glTF node's transform is composed down the hierarchy from
+its parents, and the tree is data, not something a shader body can be written
+against. So the matrices are built on the CPU and uploaded as `Float4x4`
+uniforms, which `CpuValueOf<Float4x4>` already maps to an `Array<float, 16>`.
+
+It goes in the Mesh module rather than in `Core` or `SIMD` for now, on the
+grounds that a type with one consumer is not yet a shared abstraction. It must
+match the EDSL's stated convention exactly — **column-major, right-handed,
+`[0, 1]` depth** — because the two are multiplied together in the shader and
+nothing catches a mismatch but the picture.
+
+### 5.4 The vertex, which is what Phase 3 was for
+
+```cpp
+struct MeshVertex
+{
+    float position[3];        // 12 — a world position needs the mantissa
+    GPU::SNorm16x4 normal;    //  8 — a direction, and the range is known
+    GPU::Float16x2 uv;        //  4 — half holds a UV to ~1/1000 across a texture
+    GPU::UNorm8x4 color;      //  4 — what COLOR_0 already is
+};                            // 28 bytes, against 48 unpacked
+```
+
+Every packed format Phase 3 landed except `SNorm16x2` is in that struct, and the
+one absent is absent for a reason worth writing down: the obvious further step
+is an **octahedral** normal, which is two components rather than four and would
+make the vertex 24 bytes. It is deliberately not in this phase. Octahedral
+encoding is a decode in the shader — the one place §1.3 promised there would not
+be one, because "both backends widen the attribute during the vertex fetch, in
+hardware". A four-component normal with an unused `w` costs four bytes and keeps
+that promise; it is the right trade until vertex fetch is measured to be the
+limit, and `Bench` plus the Phase 4b pass timings are what would measure it.
+
+`Float16x4` is the one packed format with no consumer here. That is a finding
+rather than a gap — it is the tangent's format, and tangents arrive with normal
+mapping, which §5.8 puts out of scope.
+
+### 5.5 The draw, which is what Phases 1, 5 and 7 were for
+
+A glTF file is a scene of nodes, each optionally holding a mesh, each mesh a list
+of primitives, each primitive its own index range and material. That is exactly
+the shape §1.1 described when it argued for a base vertex:
+
+> Packing many submeshes into one vertex buffer and drawing each with its own
+> base vertex is the standard mechanism for a mesh renderer, and glTF scenes
+> arrive in exactly that shape.
+
+So the whole scene uploads into **one vertex buffer and one index buffer**, once,
+at load. Each primitive keeps its first index, its index count and its base
+vertex, and every primitive's indices start from zero — which is what keeps them
+16-bit on a scene far past 65536 vertices, the same property `DrawRenderer` gets.
+These are static `GPU::Buffer`s, not `StreamingBuffers`: the geometry is written
+once and never rewritten, which is the case `Buffer::update` was always fine for.
+
+Per draw, the model matrix and the material factors change, and those go through
+`RenderPass::setUniforms` — `setVertexBytes` on Metal, a transient constant
+buffer on D3D12 — which is the path built for data that changes per draw. The
+hand-rolled shape is `DrawRenderer::encode`'s, and the reason for hand-rolling
+rather than `pass.draw(program)` is the same: one program, many draws.
+
+The pipeline state is Phase 5's, and this is its first consumer:
+
+```cpp
+descriptor.depth        = true;
+descriptor.cullMode     = CullMode::Back;
+descriptor.frontFace    = Winding::CounterClockwise;   // the default, and glTF's
+descriptor.depthCompare = DepthCompare::LessEqual;
+```
+
+`frontFace` needs no setting, which is the point — Phase 5 chose glTF's
+convention as the default precisely so that this line does not have to exist.
+The one case that does need it is a primitive whose node transform has a negative
+determinant: a mirrored instance reverses the winding of every triangle under it,
+and the fix is the flipped `frontFace` rather than rewriting its indices, which
+is the case §5's Phase 5 notes said the field earns its place on. Whether the
+corpus contains one is an open question in §5.9.
+
+Materials with `doubleSided` get `CullMode::None`, so a pipeline is picked per
+material rather than built once. Alpha-blended materials get
+`BlendMode::AlphaBlend` and `depthWrite = false`, which is the exact case §1's
+Phase 5 entry used to argue that one `bool depth` could not express what a
+renderer needs — so it, too, gets its first real consumer here rather than only
+a test.
+
+Textures are created `mipmapped = true`, which is Phase 7 and is the difference
+between a model that shimmers as the camera moves and one that does not.
+
+### 5.6 The shader
+
+One `MeshShader` in the EDSL, with a shading mode the inspector can switch:
+base colour (the material factor times the base colour texture times `COLOR_0`),
+normals-as-colour, and a single-light Lambert term.
+
+Two of those three exist for the inspector rather than for the picture. A model
+drawn flat-unlit is a silhouette, and a normal that failed to load, arrived
+unnormalized, or was wrecked by the `SNorm16x4` packing looks *exactly* the same
+as one that worked — so a mode that draws the normal directly is what makes the
+packing in §5.4 falsifiable by looking. That is the same instinct as §2.1's
+"comparing two renders against each other rather than against a constant": a
+picture that can only look right is not evidence.
+
+### 5.7 Tests
+
+A new `Tests/Mesh/` in eacp, added to `Tests/CMakeLists.txt` under the same
+platform gate `GPU` and `Text` sit behind.
+
+Most of what can go wrong here needs no GPU, which is the payoff for the
+`MeshData` seam:
+
+- **Node transforms compose down the tree.** A child of a translated,
+  rotated parent lands where the product says and not where either factor alone
+  does. The single most likely thing to be silently wrong, because a
+  wrong-but-plausible matrix convention still draws *something*.
+- **TRS and a supplied matrix agree.** glTF lets a node give either; a node
+  written both ways must produce the same world transform.
+- **Primitives keep zero-based indices and get a base vertex.** Two primitives
+  packed into one buffer, asserting the second's `baseVertex` is the first's
+  vertex count and that its index values start from zero — the property that
+  keeps them 16-bit, and one that a loader "helpfully" rebasing would break with
+  no visible symptom until a scene passes 65536 vertices.
+- **Material defaults are glTF's**, not zero-initialised C++ ones. A missing
+  `baseColorFactor` is opaque white; a missing material is the default material.
+  Getting this wrong renders a black scene, which reads as a lighting bug.
+- **The packed vertex round-trips.** A normal and a UV through `SNorm16x4` /
+  `Float16x2` and back, to the precision each format actually has.
+
+Plus one rendered case through `View::renderToImage`, in the shape §2.1
+established: two cubes at different depths, asserting the near one occludes the
+far one — which fails if the depth state, the projection's handedness, or the
+node composition is wrong, and is the cheapest single check that the whole chain
+is connected.
+
+Every assertion gets checked against the failure it exists for by breaking the
+thing deliberately, as in all seven phases before it. That is the convention that
+has caught something every time.
+
+### 5.8 Deliberately out of scope
+
+The first slice is **static, unlit-to-Lambert, single-scene**. Named here so the
+absences read as decisions:
+
+- **PBR.** Metallic-roughness, normal mapping, IBL. This is where it ends up, and
+  it needs nothing new from the GPU module — which is exactly why it goes second.
+  The parts that *prove* Phases 1 to 7 are the parts in this slice.
+- **Animation and skinning.** Skinning is the one that would come back to the GPU
+  module, and §1.2 already noted joint matrices have the same shape as per-frame
+  uniform data. It wants `StreamingBuffers` and possibly a storage-buffer path.
+- **Draco, KTX2, and the `KHR_*` extension set.** Each is a second dependency.
+- **Sorting, frustum culling, instancing.** Scene-graph work rather than loader
+  or backend work, and premature before `Bench` says the draw count matters.
+
+### 5.9 Open questions
+
+- **Does the corpus contain a mirrored node?** §5.5 says a negative-determinant
+  transform is what `frontFace` exists for. If nothing in the test set has one,
+  the path is written blind and should be tested with a deliberately mirrored
+  node rather than assumed.
+- **Where do the model files come from, and do they go in the repository?**
+  Khronos's sample set is the obvious corpus and is far too large to vendor. A
+  handful of small `.glb` files for the tests, authored in the test itself where
+  possible, is the shape that keeps CI honest — the loader tests above are all
+  written against glTF constructed in the test rather than a file on disk, for
+  that reason. The app takes a path.
+- **Does `Float16x2` have the precision for a tiled UV?** Half holds a UV to
+  about one part in a thousand across `[0, 1]`, which §5.4 calls ample. A UV of
+  40.0 on a tiled texture has a thousandth of *that* — 0.04 of a texture — which
+  is not ample at all. If the corpus has tiled geometry this is where it shows,
+  and the answer is `Float2` for UVs rather than a cleverer packing.
+
+### 5.10 What the first slice cost, and what this section got wrong
+
+**Status: done on `mesh-gltf` in both repositories, Metal verified, not yet
+merged.** eacp's suite is **25 new tests in `Tests/Mesh`**, and `GPUTests` is
+unchanged at 191 — the Mesh module needed nothing from the GPU one that Phases 1
+to 7 had not already landed, which is the strongest thing this phase says about
+them. The module builds clean under `EACP_CI_BUILD=ON` as well, which is the
+unity-build trap Phase 7 recorded.
+
+`Apps/Model` loads a glTF, draws it with an orbit camera, and reports the node
+tree, the materials, the geometry cost and the per-pass GPU timings. It ships a
+scene built in memory so launching it is a smoke test of the whole path rather
+than a blank window.
+
+Numbers from that sample scene — five nodes, three meshes, 72 vertices:
+
+| | |
+| --- | --- |
+| `model` pass | 0.067 ms |
+| `ui` pass | 0.160 ms |
+| Geometry | 2.2 KB, against 3.8 KB unpacked (1.74×) |
+
+The inspector costs more than twice what the model costs, which is the first
+thing having both passes labelled is able to say, and exactly the shape Phase 4b
+predicted would be worth knowing.
+
+**Three assertions passed for the wrong reason and had to be rewritten.** This
+is Phase 5's "a case that passes for one reason is worth as much as one that
+fails" arriving again, harder, and it is the single most useful thing this phase
+produced:
+
+- **The mirrored-node case passed with the front-face flip deleted.** Culling a
+  mirrored cube's near faces simply reveals its *far* faces, which are the same
+  colour — so the obvious scene proves nothing. It now parks a green slab inside
+  the red cube, between its two faces, so the broken version comes out green.
+- **The node-composition case passed with the multiplication reversed**, because
+  it composed two *translations* and translations commute. The parent now
+  rotates and the child translates.
+- **The base-vertex case would have passed without a base vertex at all.** Two
+  primitives whose geometry differs only by their node's transform draw
+  identically whether or not it is threaded through. The offset had to move into
+  the *vertex data* for the draw to be able to get it wrong.
+
+Each was found by breaking the thing deliberately, as in every phase before it.
+Ten breaks were run in total — base vertex pinned to zero, the front-face flip
+removed, the depth attachment removed, the shading uniform never sent, indices
+rebased in the loader, material defaults zero-initialised, the composition
+reversed, the normal matrix replaced by the model matrix, the generated normals
+wound backwards, TRS reordered — and every one is now caught by precisely the
+cases naming it.
+
+**Six things this section got wrong or did not anticipate:**
+
+- **"The indices stay 16-bit" is a check, not a property.** §5.5 stated it
+  flatly. A single glTF primitive genuinely can exceed 65536 vertices, so the
+  loader keeps indices 32-bit in `MeshData` and `fitsNarrowIndices` decides the
+  upload width. The base vertex still buys almost everything the section claimed
+  — the question is about the largest *primitive* rather than the model, so a
+  200k-vertex model still indexes narrowly — but it is answered rather than
+  assumed.
+- **The model cannot be drawn underneath the UI, and §5 never noticed.** ImGui's
+  pipeline has no depth attachment and a 3D scene needs one; both backends reject
+  a draw whose pipeline disagrees with its pass about that. So the scene renders
+  into a texture with its own depth buffer and the UI samples it — which needed
+  a new hook in this repository's library, `ImGuiView::onBeforePass`. That is the
+  second time an app has needed something from `Lib/` that the plan assumed it
+  could do from outside, after `DrawRenderer::getPrepareTime()` in Phase 4a, and
+  for the same reason: overriding `render()` forks the view's frame logic into
+  the app.
+- **It made the viewport better rather than worse.** A texture target is a
+  resizable panel, so the 3D view is an ImGui window rather than the whole
+  surface — which is what an inspector wanted anyway.
+- **`cgltf_load_buffers` resolves data URIs for *buffers* only.** An image
+  written inline as `data:image/png;base64,...` is left for the caller, so the
+  most common single-file `.gltf` shape yields no textures unless the loader
+  decodes it itself. Not in any documentation; found by reading the source.
+- **glTF asks for flat normals when a mesh has none**, which needs a vertex per
+  face and therefore a different vertex count than the file declares. The loader
+  generates area-weighted *smooth* normals instead — same vertex buffer, rounded
+  where flat shading would facet. Written down in `GltfLoader.cpp` rather than
+  left as a silent deviation.
+- **`Float16x4` still has no consumer**, exactly as §5.4 predicted. It is the
+  tangent's format and tangents arrive with normal mapping. Five of the six
+  packed formats Phase 3 landed are now in use.
+
+**And one thing it got right, which is worth as much.** §5.9 asked whether the
+corpus contains a mirrored node. It does not have to: the case is authored in
+`MeshRenderTests` and in the sample scene the app ships, so the path Phase 5's
+`frontFace` field exists for has a consumer and a test rather than a hope.
+
+The other two open questions in §5.9 are still open. No model files are
+vendored, and `Float16x2`'s precision on a *tiled* UV — a UV of 40, not of 0.4 —
+has not been tested against real geometry, because nothing in the sample scene
+tiles. That remains the most likely thing in §5.4 to be wrong.
