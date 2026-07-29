@@ -43,6 +43,14 @@ keep separate windows, settings and input state.
 - `Apps/MixedViews/` — an ImGui panel and a `WebView` side by side in one
   window, separated by a draggable splitter, wired to each other in both
   directions.
+- `Apps/Bench/` — what a frame costs, against a synthetic load set by sliders
+  rather than by whatever the demo window happens to contain. Build it
+  `RelWithDebInfo`: `prepare()` reads 13× slower in a Debug build.
+- `Apps/Model/` — a glTF inspector. eacp's `Mesh` module loads and draws the
+  model; this backend's overlay reports its node tree, materials, geometry cost
+  and per-pass GPU timings. The 3D view is an `ImGui::Image` of a render target,
+  because the UI's pass has no depth attachment and a scene needs one — see
+  `ImGuiView::onBeforePass`.
 
 ## Building
 
@@ -58,6 +66,8 @@ Output:
 
 - `build/Apps/Demo/Demo.app` (macOS bundle)
 - `build/Apps/MixedViews/MixedViews.app`
+- `build/Apps/Bench/Bench.app`
+- `build/Apps/Model/Model.app`
 
 To build against a local eacp checkout — the usual case when the two are being
 developed together:

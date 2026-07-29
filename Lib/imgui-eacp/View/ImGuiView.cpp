@@ -267,6 +267,11 @@ void ImGuiView::render(GPU::Frame& frame)
     renderer.prepare(*drawData);
     updateCursor();
 
+    // Before the pass opens rather than inside it: what this is for is a pass of
+    // its own, into a target with state the UI's pass does not have — see
+    // onBeforePass.
+    beforePass(frame);
+
     auto pass = frame.beginPass({.clearColor = options.clearColor,
                                  .clear = true,
                                  .label = options.passLabel});

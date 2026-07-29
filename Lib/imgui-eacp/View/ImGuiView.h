@@ -81,6 +81,25 @@ public:
     // else. Override draw() instead when the panel has state of its own.
     std::function<void()> onDraw = [] {};
 
+    // Run your own render passes on this frame, before the one the UI is drawn
+    // in. What it is for is content that has to be rendered into a texture the
+    // UI then shows — a 3D viewport, a preview thumbnail, anything with its own
+    // pipeline state.
+    //
+    // Why a hook rather than letting an app override render(): the UI's pass
+    // has no depth attachment, and both backends reject a draw whose pipeline
+    // disagrees with the pass about that. So a 3D scene cannot simply be drawn
+    // underneath the UI in the same pass — it needs a pass of its own, on a
+    // target that has depth. Overriding render() to arrange that would fork
+    // this view's frame logic into every app that wants a viewport, which is
+    // the same reason DrawRenderer times itself rather than letting `Bench`
+    // wrap the calls.
+    //
+    // It runs after the UI's own uploads and before its pass opens, so a
+    // texture drawn here is written by the GPU before the pass that samples it
+    // — the UI shows this frame's contents, not the previous frame's.
+    std::function<void(GPU::Frame&)> onBeforePass = [](GPU::Frame&) {};
+
     // Whether ImGui consumed the last input it was given. An app routing
     // events to something else behind the UI asks these first.
     bool wantsMouse() const;
@@ -113,6 +132,7 @@ public:
 
 protected:
     virtual void draw() { onDraw(); }
+    virtual void beforePass(GPU::Frame& frame) { onBeforePass(frame); }
 
 private:
     void configureContext();
