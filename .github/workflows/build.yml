@@ -44,3 +44,10 @@ jobs:
 
       - name: Build
         run: cmake --build build
+
+      # Until this step existed, CI compiled this repository and ran nothing —
+      # so every claim about the D3D12 side was compile-only. The rendered cases
+      # go through View::renderToImage, which needs a GPU device; the runners
+      # have one, and any that does not self-skips rather than failing.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

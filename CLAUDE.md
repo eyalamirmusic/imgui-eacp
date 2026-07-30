@@ -27,6 +27,10 @@ cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Debug -DEACP_UNITY_BUILD=OFF
 # Build everything
 cmake --build build
 
+# Run the tests (NanoTest, same pattern as eacp's own suites)
+ctest --test-dir build --output-on-failure
+./build/Tests/ImGuiEacpTests            # or the binary directly, for --filter
+
 # Build one app
 cmake --build build --target Demo
 cmake --build build --target MixedViews
@@ -73,8 +77,20 @@ imgui-eacp/
     Input/KeyMap         eacp key codes / buttons / cursors -> ImGui's
     ImGuiEacp.h          Umbrella header, the only one apps include
   Apps/                  Example applications (one subdir per app)
+  Tests/                 NanoTest suite (target: ImGuiEacpTests)
   CMake/                 CPM.cmake + Find modules + warnings interface
 ```
+
+Tests follow eacp's own pattern exactly: `nano_add_executable` with `NO_MAIN`,
+a `TestMain.cpp` that runs the suite inside `eacp::Apps::run` because a view
+needs the platform app object, and a split between cases that need no GPU
+(`KeyMapTests`) and rendered ones gated on `APPLE OR WIN32` that drive a real
+`ImGuiView` through `View::renderToImage` and read pixels back. New test files
+go in the list in `Tests/CMakeLists.txt`.
+
+Every case is checked against the failure it exists for by breaking the thing
+deliberately — the convention eacp's GPU work uses throughout, and the one that
+found both bugs this suite has caught so far.
 
 New source files are added directly to `Lib/imgui-eacp/CMakeLists.txt` under
 `target_sources(...)`. New apps go under `Apps/<Name>/` with their own

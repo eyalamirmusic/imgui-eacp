@@ -142,6 +142,15 @@ texture alive for the frame that draws it.
   host window — so every cursor this backend asks for is the arrow there.
 - Multi-viewport is out of scope: this is the master branch of ImGui, one
   viewport per view.
+- `renderToImage` at a scale other than the view's own `backingScale()` clips
+  wrongly. `io.DisplayFramebufferScale` comes from `backingScale()`, and a clip
+  rect is multiplied by it to reach render-target pixels — which is what
+  `RenderPass::setScissorRect` documents callers should do — but a snapshot
+  renders into a target sized by the scale *it* was given. When the two differ
+  every scissor is off by the ratio: too large clips nothing, too small cuts
+  content away. On-screen rendering is unaffected, because there the two always
+  agree. Fixing it properly wants eacp to tell a view what scale the frame it is
+  rendering is at, rather than the view assuming its display's.
 
 ## License
 

@@ -91,12 +91,20 @@ ImGuiView::ImGuiView(const ViewOptions& optionsToUse)
     setHandlesMouseEvents(true);
     setGrabsFocusOnMouseDown(true);
 
-    auto* previous = ImGui::GetCurrentContext();
-
     context = ImGui::CreateContext();
-    configureContext();
 
-    ImGui::SetCurrentContext(previous);
+    // The scope is not belt and braces: ImGui::CreateContext makes the new
+    // context current *only when there was not already one*, and restores the
+    // previous one otherwise. So configuring straight after it writes this
+    // view's backend name, flags, style, font and clipboard hooks into whatever
+    // context the caller happened to have current — leaving this view
+    // unconfigured and corrupting theirs.
+    //
+    // It works in an app because there is usually no ambient context when a
+    // view is built, which is exactly what made it worth a test rather than a
+    // reading.
+    auto scope = ContextScope {context};
+    configureContext();
 }
 
 ImGuiView::~ImGuiView()

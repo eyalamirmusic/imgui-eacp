@@ -38,3 +38,14 @@ option(IMGUI_EACP_ENABLE_EXAMPLES "Build the imgui-eacp example apps"
 if (IMGUI_EACP_ENABLE_EXAMPLES)
     add_subdirectory(Apps)
 endif ()
+
+# Off when this library is somebody's subproject, the same way eacp's own
+# EACP_ENABLE_TESTS is: a project consuming imgui-eacp should not find this
+# repository's test targets, or NanoTest, in its build tree.
+option(IMGUI_EACP_ENABLE_TESTS "Build the imgui-eacp tests"
+        ${PROJECT_IS_TOP_LEVEL})
+
+if (IMGUI_EACP_ENABLE_TESTS)
+    enable_testing()
+    add_subdirectory(Tests)
+endif ()
