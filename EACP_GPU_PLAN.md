@@ -27,7 +27,7 @@ wrong about it.
 | 5 — culling + depth state (§3) | `gpu-pipeline-state` | Done, both backends, merged |
 | 6 — viewport (§3) | `gpu-viewport` | Done, both backends, merged |
 | 7 — mipmaps (§3) | `gpu-mipmaps` | Done, both backends, merged |
-| 8 — glTF (§5) | `mesh-gltf` | First slice done, Metal verified, unmerged |
+| 8 — glTF (§5) | `mesh-gltf` | First slice done, both backends, unmerged |
 
 Phases 1 to 7 were stacked, each cut from the one before, so the tip contained
 all of them and landing the lot was one fast-forward per repository. Every name
@@ -46,8 +46,9 @@ DrawRenderer.h(21): error C2039: 'UNorm8x4': is not a member of 'eacp::GPU'
 Worth remembering rather than rediscovering — while a phase is in flight here,
 this repository's CI says nothing at all.
 
-eacp's `GPUTests` is **191 passed, 0 failed**, up from 141 before any of this,
-and the whole suite is **834 tests** in CI where it was 794.
+When Phase 7 landed, eacp's `GPUTests` was **191 passed, 0 failed**, up from 141
+before any of this, and the whole suite was **834 tests** in CI where it was 794.
+Phase 8 adds 38 more, all of them in `Tests/Mesh` and none in `GPUTests`.
 Every new assertion was checked against the failure it exists for by breaking
 the thing deliberately and watching it fail — the base vertex pinned back to
 zero, `StreamingBuffers::write` reverted to allocating per call, Metal's
@@ -414,6 +415,14 @@ is normally stored, and how glTF ships it. A typical vertex is position
 (3×float32) plus a packed normal, packed tangent and half-float UVs — around 24
 bytes. Unpacked to float everywhere it is 48. Vertex fetch is a real cost in a
 scene renderer in a way it is not in a UI.
+
+**One of those four examples turned out to be wrong, and it is worth knowing
+which.** Phase 8 measured the half-float UV and gave it back: half's precision is
+relative, a texel's is not, and a tiled UV is out by sixteen texels of a 1024
+texture. See §5.4. The packed *normal* and the packed colour hold up exactly as
+argued, and the difference between the two cases is the rule this section should
+have stated: a fixed-width format works where the range is known in advance,
+which is true of a direction and a colour and false of a texture coordinate.
 
 **The change.** Extend the enum and map it in both backends:
 
@@ -1163,24 +1172,55 @@ struct MeshVertex
 {
     float position[3];        // 12 — a world position needs the mantissa
     GPU::SNorm16x4 normal;    //  8 — a direction, and the range is known
-    GPU::Float16x2 uv;        //  4 — half holds a UV to ~1/1000 across a texture
+    float uv[2];              //  8 — see below; this was a Float16x2 and was wrong
     GPU::UNorm8x4 color;      //  4 — what COLOR_0 already is
-};                            // 28 bytes, against 48 unpacked
+};                            // 32 bytes, against 48 unpacked
 ```
 
-Every packed format Phase 3 landed except `SNorm16x2` is in that struct, and the
-one absent is absent for a reason worth writing down: the obvious further step
-is an **octahedral** normal, which is two components rather than four and would
-make the vertex 24 bytes. It is deliberately not in this phase. Octahedral
-encoding is a decode in the shader — the one place §1.3 promised there would not
-be one, because "both backends widen the attribute during the vertex fetch, in
-hardware". A four-component normal with an unused `w` costs four bytes and keeps
-that promise; it is the right trade until vertex fetch is measured to be the
-limit, and `Bench` plus the Phase 4b pass timings are what would measure it.
+**The UV was `Float16x2` and it is the one packed format this phase had to give
+back.** §5.9 asked whether half had the precision for a tiled UV and named it the
+most likely thing here to be wrong. It was, and the reason generalises past this
+struct: **half's precision is relative and a texture's is not.** Eleven bits of
+mantissa buy the same *proportional* accuracy wherever the value sits, while the
+texel a UV has to resolve is 1/1024 of a tile whether the coordinate reads 0.5 or
+40.5. So the error doubles every octave against a requirement that does not move:
 
-`Float16x4` is the one packed format with no consumer here. That is a finding
-rather than a gap — it is the tangent's format, and tangents arrive with normal
-mapping, which §5.8 puts out of scope.
+| UV | worst error | texels of a 1024 texture |
+| --- | --- | --- |
+| 0 – 1 | 1/4096 tile | 0.25 |
+| 4 – 8 | 1/512 tile | 2 |
+| 32 – 64 | 1/64 tile | 16 |
+
+Sixteen texels is a visible seam between two triangles that should meet, and a
+UV of 40 is what an architectural floor or a terrain patch ordinarily arrives
+with. The other packed attributes are not exposed to this, and the distinction is
+the useful part: a normal is a direction and a colour is `[0, 1]`, so both have a
+range known in advance, which is exactly what lets a fixed-point format spend its
+whole precision on it. **A UV has no such range**, and that — rather than
+anything about UVs specifically — is what makes it the attribute a packed format
+gets wrong.
+
+The vertex costs four more bytes for it, 32 against 28, and 32 divides a cache
+line evenly where 28 did not. `MeshVertexTests` pins the numbers so that
+repacking it fails a test rather than shipping a seam.
+
+The remaining packed formats are `SNorm16x4` and `UNorm8x4`. The obvious further
+step on the normal is an **octahedral** pair, which is two components rather than
+four and would take the vertex to 28. It is deliberately not in this phase:
+octahedral encoding is a decode in the shader — the one place §1.3 promised there
+would not be one, because "both backends widen the attribute during the vertex
+fetch, in hardware". A four-component normal with an unused `w` costs four bytes
+and keeps that promise; it is the right trade until vertex fetch is measured to
+be the limit, and `Bench` plus the Phase 4b pass timings are what would measure
+it.
+
+`Float16x2` and `Float16x4` are now both packed formats with no consumer here,
+and that is a finding rather than a gap. `Float16x4` is the tangent's format and
+tangents arrive with normal mapping, which §5.8 puts out of scope. `Float16x2`
+lost its only consumer to the measurement above — which is worth carrying back to
+§1.3, since "half-float UVs" is the example that section used to argue for the
+format in the first place. Half is right for a bounded quantity that is not
+addressing a texture; it is not right for a UV.
 
 ### 5.5 The draw, which is what Phases 1, 5 and 7 were for
 
@@ -1308,11 +1348,14 @@ absences read as decisions:
   possible, is the shape that keeps CI honest — the loader tests above are all
   written against glTF constructed in the test rather than a file on disk, for
   that reason. The app takes a path.
-- **Does `Float16x2` have the precision for a tiled UV?** Half holds a UV to
-  about one part in a thousand across `[0, 1]`, which §5.4 calls ample. A UV of
-  40.0 on a tiled texture has a thousandth of *that* — 0.04 of a texture — which
-  is not ample at all. If the corpus has tiled geometry this is where it shows,
-  and the answer is `Float2` for UVs rather than a cleverer packing.
+- ~~**Does `Float16x2` have the precision for a tiled UV?**~~ **Answered: no, and
+  the UV is now a `Float2`** — which is the answer this question predicted, for
+  very nearly the reason it gave. It was off by one step: the worry was that a UV
+  of 40 keeps "a thousandth of *that*", but half's mantissa is relative, so the
+  error is a thousandth of 40 rather than a thousandth of a thousandth. That is
+  1/64 of a tile, or sixteen texels of a 1024 texture — bad enough to see and not
+  as bad as feared. It did not need the corpus to show it: the arithmetic is the
+  measurement, and `MeshVertexTests` states it per octave. See §5.4.
 - ~~**Should the glTF parser be a dependency?**~~ Answered, and the answer went
   the other way from the first draft: no. See §5.2. eacp takes no third-party
   package for this, and cgltf never reached `main` in either repository.
@@ -1325,13 +1368,34 @@ absences read as decisions:
 
 ### 5.10 What the first slice cost, and what this section got wrong
 
-**Status: done on `mesh-gltf` in both repositories, Metal verified, not yet
-merged.** eacp's suite is **38 new tests in `Tests/Mesh`**, and `GPUTests` is
-unchanged at 191 — the Mesh module needed nothing from the GPU one that Phases 1
-to 7 had not already landed, which is the strongest thing this phase says about
-them. The module builds clean under `EACP_CI_BUILD=ON` as well, which is the
-unity-build trap Phase 7 recorded, and takes **no third-party dependency** — see
-§5.2 for why that was worth the extra thousand lines.
+**Status: done on `mesh-gltf` in both repositories, verified on both backends,
+not yet merged.** eacp's suite is **38 new tests in `Tests/Mesh`**, and the Mesh
+module added nothing to `GPUTests` — it needed nothing from the GPU one that
+Phases 1 to 7 had not already landed, which is the strongest thing this phase
+says about them. The module builds clean under `EACP_CI_BUILD=ON` as well, which
+is the unity-build trap Phase 7 recorded, and takes **no third-party
+dependency** — see §5.2 for why that was worth the extra thousand lines.
+
+**The D3D12 side was verified the way Phases 5 to 7 were: by pushing the
+branch.** All 38 land on Windows too — **872/872 on Windows MSVC, Windows Clang,
+Windows MSVC ARM64 and Windows Clang ARM64**, against 834 before this phase —
+and `MeshRenderTests` is a rendered case, so the depth attachment, the pipeline
+state and the base vertex are read back as pixels on that backend rather than
+assumed. This entry said "Metal verified" for a day longer than it was true,
+which is the same lag the top of this document records for Phases 1 to 4: the
+Windows answer arrives about ten minutes after the push, and the only thing
+stopping it being written down is remembering to look.
+
+**`main` moved five commits under the branch while it sat there, and this time
+it did not collide.** Ranged `Buffer` read and update, three pieces of compute
+codegen, and a Windows webview fix — none of them anywhere near the Mesh module,
+so the merge was clean and nothing in `Lib/eacp/Mesh` changed to take it. Worth
+recording next to Phase 5's collision because it is the same situation with the
+opposite outcome: the risk of a long-lived branch is not that `main` moves, it is
+that it moves *into the same files*. The one number it changes is `GPUTests`,
+which reads **194** on the branch rather than the 191 this phase started from —
+`BufferRangeTests` and the codegen cases came from `main`, and none of the three
+is this phase's.
 
 `Apps/Model` loads a glTF, draws it with an orbit camera, and reports the node
 tree, the materials, the geometry cost and the per-pass GPU timings. It ships a
@@ -1344,7 +1408,10 @@ Numbers from that sample scene — five nodes, three meshes, 72 vertices:
 | --- | --- |
 | `model` pass | 0.067 ms |
 | `ui` pass | 0.160 ms |
-| Geometry | 2.2 KB, against 3.8 KB unpacked (1.74×) |
+| Geometry | 2.5 KB, against 3.8 KB unpacked (1.54×) |
+
+The geometry line read 2.2 KB and 1.74× until the UV went back to a `Float2`;
+§5.4 is what those four bytes a vertex bought.
 
 The inspector costs more than twice what the model costs, which is the first
 thing having both passes labelled is able to say, and exactly the shape Phase 4b
@@ -1450,15 +1517,30 @@ cases naming it.
   where flat shading would facet. Written down in `GltfLoader.cpp` rather than
   left as a silent deviation.
 - **`Float16x4` still has no consumer**, exactly as §5.4 predicted. It is the
-  tangent's format and tangents arrive with normal mapping. Five of the six
-  packed formats Phase 3 landed are now in use.
+  tangent's format and tangents arrive with normal mapping. `Float16x2` had one
+  and lost it — see the next bullet — so two of the six packed formats Phase 3
+  landed are in use here, not five.
+
+- **The half-float UV was wrong, and every test in the suite agreed with it.**
+  This is the finding §5.4 and §5.9 now carry, but the part that belongs in this
+  list is *why it survived 38 tests*: every UV assertion anywhere in
+  `Tests/Mesh` used a coordinate inside `[0, 1]`, and so did the whole sample
+  scene. Not one of them was written to be lenient — `[0, 1]` is simply what a
+  hand-authored test writes when it needs a texture coordinate, exactly as a
+  base64 `.gltf` of float attributes is what one writes when it needs a file.
+  That is the same shape as the finding four bullets up, where 25 tests proved
+  only that the old behaviour survived, and it is the more general lesson of this
+  phase: **a test authored by hand covers the case a hand reaches for**, and the
+  gap it leaves is invisible from inside the suite, because everything in there
+  passes. Both times, the fix was to ask what a *file* contains that a *test*
+  never happens to.
 
 **And one thing it got right, which is worth as much.** §5.9 asked whether the
 corpus contains a mirrored node. It does not have to: the case is authored in
 `MeshRenderTests` and in the sample scene the app ships, so the path Phase 5's
 `frontFace` field exists for has a consumer and a test rather than a hope.
 
-The other two open questions in §5.9 are still open. No model files are
-vendored, and `Float16x2`'s precision on a *tiled* UV — a UV of 40, not of 0.4 —
-has not been tested against real geometry, because nothing in the sample scene
-tiles. That remains the most likely thing in §5.4 to be wrong.
+One open question in §5.9 remains: no model files are vendored, and where a
+corpus comes from is unanswered. The tiled-UV question that sat beside it is
+closed — see §5.4 — and it closed the way that section predicted, without
+needing a corpus to do it.

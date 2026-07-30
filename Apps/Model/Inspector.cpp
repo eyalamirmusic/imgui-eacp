@@ -148,7 +148,9 @@ void drawModelSummary(const MeshData& data)
                 (double) (vertexBytes + indexBytes) / 1024.0);
 
     // 48 bytes is the same vertex with nothing packed: three floats of position,
-    // four of normal, two of uv and four of colour.
+    // three of normal, two of uv and four of colour. The normal is three rather
+    // than the four MeshVertex packs, because the fourth is padding the packed
+    // format needs and an unpacked one would not carry.
     auto unpacked = data.vertices.size() * 48 + data.indices.size() * 4;
     ImGui::TextDisabled("unpacked it would be %.1f KB (%.2fx)",
                         (double) unpacked / 1024.0,
