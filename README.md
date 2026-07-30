@@ -130,11 +130,16 @@ texture alive for the frame that draws it.
 
 - Window activation is not wired to `io.AddFocusEvent` from the window itself;
   the view polls its own `hasFocus()` instead, which is per-view keyboard focus
-  rather than per-window activation.
+  rather than per-window activation. eacp does expose the event —
+  `WindowEvents::onActivationChanged`, on both backends — but it is a single
+  `std::function`, so a view assigning it would replace the host app's handler.
+  Wiring this wants a multicast listener on eacp's side first.
 - No IME hook (`Platform_SetImeDataFn`), so composing scripts fall back to the
   platform's own input handling.
 - eacp's `MouseCursor` has no diagonal resize shapes, so ImGui's two corner
-  grips come back as the arrow.
+  grips come back as the arrow. On Windows no shape is applied at all —
+  `View::setMouseCursor` stores the value pending `WM_SETCURSOR` handling in the
+  host window — so every cursor this backend asks for is the arrow there.
 - Multi-viewport is out of scope: this is the master branch of ImGui, one
   viewport per view.
 

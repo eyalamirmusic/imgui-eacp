@@ -476,6 +476,35 @@ series while the eacp worktree is open:
 - `io.AddFocusEvent` needs *window activation*, which eacp does not expose; the
   view polls per-view `hasFocus()` instead.
 
+Both were logged in a sentence each and both were re-scoped after Phase 8, one in
+each direction. Neither is as described:
+
+**Window activation is no longer missing from eacp.** `WindowEvents::onActivationChanged(bool isKey)`
+exists on `Window`, is implemented on *both* backends —
+`windowDidBecomeKey` / `windowDidResignKey` on macOS, `WM_ACTIVATE` on Windows —
+and has cases in `Tests/Graphics/WindowTests.cpp`. `View::getWindow()` reaches it.
+So this item has moved from "eacp does not expose it" to a question about *this*
+repository, and the question is ownership: `onActivationChanged` is a single
+`std::function`, so an `ImGuiView` assigning it silently replaces whatever the
+host app assigned. Chaining from here is fragile in the obvious way — an app that
+assigns after the view wins, and nothing says so — which makes the honest fix a
+multicast listener on eacp's side rather than a clever capture on this one. Worth
+settling before writing either.
+
+**The cursor item is bigger than "no diagonal shapes", in two ways.** First,
+`View::setMouseCursor` on Windows *stores the value and applies nothing*: doing
+it properly means handling `WM_SETCURSOR` in `CompositionHostWindow` and
+resolving the view under the pointer there, which its own comment says was left
+undone deliberately rather than written blind. So on Windows this is not two
+missing shapes, it is the whole feature. Second, on macOS the diagonal cursors
+have no public API before **macOS 15**, where they arrive as
+`+[NSCursor frameResizeCursorFromPosition:inDirections:]` — and that same release
+deprecates `resizeLeftRightCursor` and `resizeUpDownCursor`, which are the two
+eacp already uses. So the work is an availability check with a fallback against a
+macOS 11 deployment target, and it has a deprecation warning waiting behind it on
+the shapes that already work. Not hard, but not the afternoon the one-line entry
+implies.
+
 ---
 
 ## 2. Measurement
