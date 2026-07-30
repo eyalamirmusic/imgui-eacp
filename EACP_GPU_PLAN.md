@@ -48,7 +48,8 @@ this repository's CI says nothing at all.
 
 When Phase 7 landed, eacp's `GPUTests` was **191 passed, 0 failed**, up from 141
 before any of this, and the whole suite was **834 tests** in CI where it was 794.
-Phase 8 adds 38 more, all of them in `Tests/Mesh` and none in `GPUTests`.
+Phase 8 adds 41 more, all of them in `Tests/Mesh` and none in `GPUTests`, for
+878 on each Windows toolchain.
 Every new assertion was checked against the failure it exists for by breaking
 the thing deliberately and watching it fail — the base vertex pinned back to
 zero, `StreamingBuffers::write` reverted to allocating per call, Metal's
@@ -1398,7 +1399,7 @@ absences read as decisions:
 ### 5.10 What the first slice cost, and what this section got wrong
 
 **Status: done on `mesh-gltf` in both repositories, verified on both backends,
-not yet merged.** eacp's suite is **38 new tests in `Tests/Mesh`**, and the Mesh
+not yet merged.** eacp's suite is **41 new tests in `Tests/Mesh`**, and the Mesh
 module added nothing to `GPUTests` — it needed nothing from the GPU one that
 Phases 1 to 7 had not already landed, which is the strongest thing this phase
 says about them. The module builds clean under `EACP_CI_BUILD=ON` as well, which
@@ -1406,8 +1407,9 @@ is the unity-build trap Phase 7 recorded, and takes **no third-party
 dependency** — see §5.2 for why that was worth the extra thousand lines.
 
 **The D3D12 side was verified the way Phases 5 to 7 were: by pushing the
-branch.** All 38 land on Windows too — **872/872 on Windows MSVC, Windows Clang,
-Windows MSVC ARM64 and Windows Clang ARM64**, against 834 before this phase —
+branch.** Every Mesh case lands on Windows too — **878/878 on Windows MSVC,
+Windows Clang, Windows MSVC ARM64 and Windows Clang ARM64**, against 834 before
+this phase, of which 41 are `Tests/Mesh` and three came from `main` —
 and `MeshRenderTests` is a rendered case, so the depth attachment, the pipeline
 state and the base vertex are read back as pixels on that backend rather than
 assumed. This entry said "Metal verified" for a day longer than it was true,
