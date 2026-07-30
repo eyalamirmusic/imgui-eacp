@@ -987,8 +987,8 @@ And one lesson that is not about the GPU at all:
   before a push — which is the same shape as the counter-less GPU in Phase 4b:
   a configuration the developer machine does not enter by default.
 
-**Phase 8 — the glTF corpus** with `cgltf`, using this backend's ImGui overlay as
-the inspector, which by now is free. Everything §2.2 wanted in place first is:
+**Phase 8 — the glTF corpus**, using this backend's ImGui overlay as the
+inspector, which by now is free. Everything §2.2 wanted in place first is:
 GPU timings to make optimisation decisions with, and the full Tier 1 set — mips,
 face culling, depth compare and write control, viewport — to draw with. It is
 the first phase big enough to need a design rather than a paragraph, so it has
@@ -1048,39 +1048,27 @@ dependency does.
 Branch `mesh-gltf` in both, cut from `main` in each rather than continuing the
 Phase 1–7 stack, and merged eacp-first for the reason §0 gives.
 
-### 5.2 The dependency
+### 5.2 The parser, and why it is ours
 
-`cgltf` is a single header with no `CMakeLists.txt` of its own — the same shape
-as ImGui, which this repository already handles in `CMake/FindImGui.cmake` by
-fetching `DOWNLOAD_ONLY` and declaring the target itself. eacp gets
-`CMake/FindCgltf.cmake` doing the same, alongside `FindMiro` and `FindNanoTest`.
-
-It parses and nothing else: no image decode, no GPU types, no allocator to
-adopt. The image half is already answered — `Graphics::Image::decode` reads PNG
-and JPEG through the platform codec on both backends, which is what glTF ships
-its textures as, so no second dependency is needed for the corpus to render.
-
-#### The first dependency eacp does not own, and a temporary one
-
-Worth stating plainly, because it is a change of posture rather than a package:
+glTF is JSON plus a binary blob, and the obvious move is to take `cgltf` — a
+single MIT header, the de-facto standard C reader, no transitive packages. That
+is what the first draft of this section did, and it was wrong for a reason it
+never weighed: it would have been the first dependency in eacp that somebody else
+wrote.
 
 ```
 eyalamirmusic/NanoTest              eyalamirmusic/Miro
 eyalamirmusic/cpp_data_structures   eyalamirmusic/ResEmbed
-jkuhlmann/cgltf                     ← the first one that is somebody else's
 ```
 
-Every other CPM package in eacp is eacp's author's own code, as are its JSON
-parser, its test framework, its containers and its reflection. So the framework's
-supply chain has been entirely self-owned until now, and eacp's `CLAUDE.md` still
-claims "no third-party dependencies beyond macOS system frameworks" — already
-loose before this, and wrong after it.
+Every CPM package eacp has is its author's own, as are its JSON parser, its test
+framework, its containers and its reflection. That is a posture, not a
+coincidence, and a glTF loader is not the thing to break it for. **So the loader
+is written here, on `Miro::Json`** — which reaches `eacp-mesh` transitively,
+`Miro` being `PUBLIC` on `eacp-core`, and therefore costs nothing to adopt.
 
-**The intention is to replace it with a loader written here, on `Miro::Json`.**
-Miro is already `PUBLIC` on `eacp-core`, so its parser reaches `eacp-mesh`
-transitively and costs nothing to adopt. What that swap is *not*, though, is a
-7,000-line saving, and the measurement is the reason this is not being done
-first:
+**What that is not is a 7,000-line saving**, and the measurement is worth keeping
+because it is the argument anyone will re-make later:
 
 | | lines |
 | --- | --- |
@@ -1089,48 +1077,43 @@ first:
 | — cgltf's own code | 6,802 |
 | &nbsp;&nbsp;&nbsp;&nbsp;of which: JSON → struct mapping for the *whole* spec | 3,534 |
 
-`Miro::Json` replaces the 373. The other 6,802 lines are glTF semantics — and
-most of them cover animation, skins, cameras, lights and some twenty `KHR_*`
-extensions that §5.8 puts out of scope. The honest comparison is therefore not
-7,175 lines against a dependency; it is **roughly 650 lines** against it, that
-being what our own subset needs:
+`Miro::Json` replaces the 373. The other 6,802 lines are glTF semantics, and most
+of them cover animation, skins, cameras, lights and some twenty `KHR_*`
+extensions that §5.8 puts out of scope. So the real comparison was never 7,175
+against a dependency — it was the subset this module reads, estimated at ~650
+lines.
 
-| | lines |
-| --- | --- |
-| GLB container: header plus the chunk loop | ~60 |
-| Schema mapping for what §5.4 and §5.5 actually read | ~250 |
-| Buffer resolution: file URIs, base64, the BIN chunk, percent-decoding | ~80 |
-| Accessor reading: 5 component types × normalized × 7 element types, `byteStride`, and the mat2/mat3 data-alignment special cases | ~150 |
-| Sparse accessors, or an explicit refusal | ~60 |
-| Validation | ~50 |
+**It came to rather more than that.** Two files, and the estimate missed by about
+a third:
 
-**Why it waits rather than happening now.** Not the effort — the fact that the
-decision is already cheap and the information needed to make it well does not
-exist yet:
+| | estimate | actual (code lines) |
+| --- | --- | --- |
+| `GltfReader.{h,cpp}` — container, buffers, accessors | ~400 | 659 |
+| `GltfLoader.cpp` — the schema mapping into `MeshData` | ~250 | 379 |
+| `GltfReaderTests.cpp` — the paths cgltf used to cover | not budgeted | 550 |
 
-- **The seam is already there.** `MeshData` is format-agnostic and
-  `MeshRenderer` never sees cgltf; exactly one file, `GltfLoader.cpp`, includes
-  the header, and it is linked `PRIVATE`. Swapping the loader is one file.
-- **The tests come for free.** The eleven cases in `GltfLoaderTests` assert on
-  `MeshData`, not on cgltf, and they author their glTF inside the test rather
-  than loading a fixture. So they are already a conformance suite for whatever
-  parses next — matrix-versus-TRS agreement, zero-based indices with a base
-  vertex, glTF's material defaults, packed-attribute round-tripping. A
-  hand-rolled loader is done when they pass, and no test changes to get there.
-- **The subset is not settled.** If skinning lands, the accessor layer grows
-  joint indices and weights and the 650 becomes more; if it does not, it stays
-  650. Writing it now is guessing at which.
+Where the estimate went wrong is instructive: it costed the *happy path*. What it
+left out is that a model file is untrusted input, so every read is bounds-checked
+and every failure is a return value rather than an exception — and that
+`Miro::Json`'s own accessors throw on a type mismatch (`std::get` on the variant,
+`.at()` on the object), so none of them can be called directly. The safe readers
+that wrap them, and the per-element bounds checks, are most of the overrun.
 
-**A fork is ruled out.** It takes on the maintenance of somebody else's code
-without buying anything, since there is no behaviour here we need to change. If
-the motivation is supply-chain control rather than code ownership, *vendoring* —
-checking the pinned header into the tree — gets that outright, with no fetch and
-nothing upstream. The fetch is already pinned to `v1.15` by tag rather than to a
-branch, which is the same protection one step weaker.
+**What the split is.** `GltfReader` is the layer that used to be somebody else's:
+the GLB container, buffer resolution, and the accessor indirection — five
+component types, normalization, an optional byte stride, sparse overrides.
+`GltfLoader` is the schema mapping on top, and `MeshData` above that has never
+heard of either. The JSON is genuinely the small part; the layer between "the file
+says accessor 3" and "here are 72 floats" is where the work is, and where the
+bugs would have been.
 
-Until then cgltf is contained the way a dependency should be: one include, one
-`PRIVATE` link, its implementation in a generated translation unit so its code
-never compiles under eacp's warning level, and no transitive packages of its own.
+**What is deliberately refused rather than half-implemented.** Matrix accessor
+types: byte- and short-component matrices pad every column to four bytes, a rule
+that is invisible until it skews a mesh. No attribute this reader consumes is a
+matrix, so `componentsForType` returns zero for `MAT2`/`MAT3`/`MAT4` and the
+accessor is refused. Same for a percent-encoded (rather than base64) data URI,
+and for glTF 1.0, which is a different format behind the same extension.
+
 
 ### 5.3 The module
 
@@ -1138,17 +1121,25 @@ never compiles under eacp's warning level, and no transitive packages of its own
 Lib/eacp/Mesh/
   MeshTypes.h      Vec3, Mat4, and the packed vertex
   MeshData.h       The CPU scene: nodes, primitives, materials, images
-  GltfLoader.{h,cpp}   cgltf -> MeshData. The only file that includes cgltf.h
+  GltfReader.{h,cpp}   Bytes -> numbers: GLB container, buffers, accessors
+  GltfLoader.{h,cpp}   Numbers -> MeshData: the schema mapping
   MeshRenderer.{h,cpp} MeshData -> GPU buffers, textures, draws
   MeshShader.h     The shader, in the EDSL, like every other one
   Mesh.h           Umbrella header
 ```
 
 `MeshData` is deliberately **format-agnostic** — it names nothing glTF calls
-things and includes no cgltf header. A loader is a translation into it, so a
-second one (OBJ, or a packed runtime format) is a new file rather than a
-refactor, and `MeshRenderer` never learns what produced its input. The seam is
-also what makes the loader testable without a GPU, which is most of §5.7.
+things. A loader is a translation into it, so a second one (OBJ, or a packed
+runtime format) is a new file rather than a refactor, and `MeshRenderer` never
+learns what produced its input. The seam is also what makes the loader testable
+without a GPU, which is most of §5.7.
+
+`GltfReader` is a second seam one level down, and it earns its place for the same
+reason: the container and the accessor indirection are the parts with no opinion
+about what a mesh is, and keeping them apart from the schema mapping is what lets
+§5.7 test "does a byte stride work" without a node tree around it. It is
+deliberately **not** in `Mesh.h` — it is an implementation detail of the loader,
+and the tests that touch it include it directly.
 
 **A CPU `Mat4` has to be written**, and that is worth flagging because eacp does
 not have one. The matrix helpers are all EDSL-side — `perspective`, `rotateX`,
@@ -1322,23 +1313,25 @@ absences read as decisions:
   40.0 on a tiled texture has a thousandth of *that* — 0.04 of a texture — which
   is not ample at all. If the corpus has tiled geometry this is where it shows,
   and the answer is `Float2` for UVs rather than a cleverer packing.
-- **When does the cgltf replacement get written?** Decided, not open: a loader on
-  `Miro::Json` replaces it, for the reasons in §5.2, and the trigger is the PBR
-  phase in §5.8 finishing. That is the point at which the spec subset stops
-  moving — normal mapping settles whether tangents are read, and skinning settles
-  whether the accessor layer needs joints and weights — so it is the first moment
-  the ~650 lines can be written against a known target rather than a guess. It is
-  a task, not a question, and the reason it is listed here is that a decision to
-  do something later is the kind that quietly becomes a decision not to.
+- ~~**Should the glTF parser be a dependency?**~~ Answered, and the answer went
+  the other way from the first draft: no. See §5.2. eacp takes no third-party
+  package for this, and cgltf never reached `main` in either repository.
+- **How much of the spec does the reader still not read?** Known and listed in
+  §5.8, but worth restating as a question because it is now *ours* to answer
+  rather than a library's: no animation, no skins, no Draco, no KTX2, no `KHR_*`.
+  Each is now a change to `GltfReader` instead of a version bump, which is the
+  cost side of owning it. The reader refuses what it does not handle rather than
+  reading it wrongly, which is what makes that cost bounded.
 
 ### 5.10 What the first slice cost, and what this section got wrong
 
 **Status: done on `mesh-gltf` in both repositories, Metal verified, not yet
-merged.** eacp's suite is **25 new tests in `Tests/Mesh`**, and `GPUTests` is
+merged.** eacp's suite is **38 new tests in `Tests/Mesh`**, and `GPUTests` is
 unchanged at 191 — the Mesh module needed nothing from the GPU one that Phases 1
 to 7 had not already landed, which is the strongest thing this phase says about
 them. The module builds clean under `EACP_CI_BUILD=ON` as well, which is the
-unity-build trap Phase 7 recorded.
+unity-build trap Phase 7 recorded, and takes **no third-party dependency** — see
+§5.2 for why that was worth the extra thousand lines.
 
 `Apps/Model` loads a glTF, draws it with an orbit camera, and reports the node
 tree, the materials, the geometry cost and the per-pass GPU timings. It ships a
@@ -1382,16 +1375,47 @@ reversed, the normal matrix replaced by the model matrix, the generated normals
 wound backwards, TRS reordered — and every one is now caught by precisely the
 cases naming it.
 
-**Seven things this section got wrong or did not anticipate:**
+**What this section got wrong or did not anticipate:**
 
-- **§5.2 argued for cgltf on its shape and missed what it is.** The original
-  paragraph checked that it parses and nothing else, that it needs no allocator
-  and drags in no packages — all true, and all beside the point that it is the
-  first dependency in eacp somebody else wrote. That is a change of posture for a
-  framework whose every other package is its author's own, and it should have
-  been the first thing the section weighed rather than something noticed on
-  review. §5.2 now carries the decision that follows: cgltf stays for the moment
-  and a loader on `Miro::Json` replaces it, with the trigger recorded in §5.9.
+- **§5.2 argued for a dependency on its shape and missed what it was.** The
+  original paragraph checked that cgltf parses and nothing else, that it needs no
+  allocator and drags in no packages — all true, and all beside the point that it
+  would have been the first dependency in eacp somebody else wrote. That is a
+  change of posture for a framework whose every other package is its author's
+  own, and it should have been the first thing the section weighed rather than
+  something noticed on review. The loader is now written on `Miro::Json`; §5.2
+  carries the argument and the numbers.
+
+- **The estimate for writing it was a third short, and for a reason worth
+  remembering.** §5.2 costed the happy path at ~650 lines and it came to 1,038.
+  What the estimate left out is that a model file is untrusted input: every read
+  bounds-checked, every failure a return value, and `Miro::Json`'s own accessors
+  unusable directly because they throw on a type mismatch. Robustness was the
+  overrun, not features.
+
+- **Replacing the loader cost no test changes, which is the seam paying out.**
+  All 25 existing cases passed against an entirely different parser underneath,
+  unmodified — they assert on `MeshData` and author their glTF in-test, exactly as
+  §5.7 intended. That is the strongest evidence the `MeshData` seam was worth
+  drawing, and it is worth knowing it was tested rather than assumed.
+
+- **But they only proved the old behaviour survived.** Every one of those 25 uses
+  float attributes in a base64 `.gltf`, because that is what a hand-written test
+  naturally produces — so none of them touched the GLB container, a byte stride, a
+  normalized short or a sparse accessor. All four are paths a dependency covered
+  before and this tree covers now, and all four needed cases of their own:
+  `GltfReaderTests` is those, thirteen of them.
+
+- **A deliberate break found a bug in the tests rather than the code.** Breaking
+  the GLB chunk walk made `loadsAGlbContainer` *segfault* instead of fail:
+  NanoTest's `check()` records and carries on, `Vector::operator[]` is unchecked
+  and `noexcept`, so a case that asserts a load succeeded and then subscripts it
+  reads out of bounds when the load fails. In CI that takes the suite's buffered
+  output with it and says nothing about which case died. Every case that
+  subscripts now guards first. Worth carrying forward well past this phase: an
+  assertion framework that continues after a failure makes the *next* line a
+  hazard, and the cost is paid at exactly the moment something else has already
+  gone wrong.
 
 - **"The indices stay 16-bit" is a check, not a property.** §5.5 stated it
   flatly. A single glTF primitive genuinely can exceed 65536 vertices, so the
@@ -1412,10 +1436,14 @@ cases naming it.
 - **It made the viewport better rather than worse.** A texture target is a
   resizable panel, so the 3D view is an ImGui window rather than the whole
   surface — which is what an inspector wanted anyway.
-- **`cgltf_load_buffers` resolves data URIs for *buffers* only.** An image
-  written inline as `data:image/png;base64,...` is left for the caller, so the
-  most common single-file `.gltf` shape yields no textures unless the loader
-  decodes it itself. Not in any documentation; found by reading the source.
+- **A glTF's images and its buffers are resolved by different rules**, and the
+  spec does not put them side by side. A buffer is a URI or the GLB binary chunk;
+  an image is a URI *or a buffer view*, and its URI may be an inline
+  `data:image/png;base64,...` — which is the most common single-file `.gltf`
+  shape, and yields no textures at all if the loader only resolves buffer URIs.
+  Worth knowing because it is the one place the two paths look interchangeable
+  and are not: `GltfReader::readUri` serves both, and `loadImages` has to try the
+  buffer view *first*.
 - **glTF asks for flat normals when a mesh has none**, which needs a vertex per
   face and therefore a different vertex count than the file declares. The loader
   generates area-weighted *smooth* normals instead — same vertex buffer, rounded
